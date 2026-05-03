@@ -371,3 +371,5 @@ src/*.tex
 .codex
 .claude
 .agents
+PERFORMANCE_OPTIMIZATIONS.md
+TODO.md

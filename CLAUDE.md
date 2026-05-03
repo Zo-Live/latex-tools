@@ -98,8 +98,10 @@ latexmk src/test.tex
 如果验证 PDF 转 LaTeX 工具，可运行：
 
 ```bash
-uv run latex-tools extract "docs/6.1 集合与映射.pdf" > /tmp/latex_tools_extract_stdout.tex
+uv run latex-tools extract "docs/6.1 集合与映射.pdf" --pages 7 > /tmp/latex_tools_extract_stdout.tex
 uv run latex-tools batch docs/ -o src/
 ```
+
+验证 PDF 转 LaTeX 工具时，优先选择 1 页或少量页，例如 `--pages 7` 或 `--pages 15-17`，避免无意中处理完整文件。只有在需要验证整篇、批量或跨页行为时才运行完整 PDF 或 `batch`，并说明原因。
 
 在受限沙箱中，`uv` 可能需要写用户缓存目录；如果因缓存目录权限失败，需要在获得授权后重试。

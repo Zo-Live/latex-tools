@@ -87,9 +87,13 @@ class LLMPdfConverter:
                 previous_latex_tail=previous_latex_tail,
                 extra_prompt=self.extra_prompt,
             )
+            previous_latex_tail = _append_tail(
+                previous_latex_tail,
+                result.latex,
+                has_previous_fragment=bool(fragments),
+            )
             fragments.append(result.latex)
             notes.extend(result.notes)
-            previous_latex_tail = _tail("\n\n".join(fragments))
 
         return LLMConversionResult(
             latex=self.document_builder.convert_fragments(
@@ -112,3 +116,15 @@ def _tail(text: str, max_chars: int = 2000) -> str:
     if len(text) <= max_chars:
         return text
     return text[-max_chars:]
+
+
+def _append_tail(
+    previous_tail: str,
+    fragment: str,
+    *,
+    has_previous_fragment: bool,
+    max_chars: int = 2000,
+) -> str:
+    if not has_previous_fragment:
+        return _tail(fragment, max_chars)
+    return _tail(previous_tail + "\n\n" + fragment, max_chars)
