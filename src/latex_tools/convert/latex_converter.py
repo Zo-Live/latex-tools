@@ -7,6 +7,96 @@ from typing import List
 from ..extract.base import ExtractedContent
 
 
+_DOCUMENTCLASS_RE = re.compile(r"\\documentclass(?:\[[^\]]*\])?\{[^}]+\}")
+_USEPACKAGE_RE = re.compile(r"\\usepackage(?:\[[^\]]*\])?\{[^}]+\}")
+
+_ESCAPE_MAP = {
+    "\\": r"\textbackslash{}",
+    "{": r"\{",
+    "}": r"\}",
+    "$": r"\$",
+    "&": r"\&",
+    "#": r"\#",
+    "^": r"\^{}",
+    "_": r"\_",
+    "%": r"\%",
+    "~": r"\textasciitilde{}",
+}
+_ESCAPE_RE = re.compile("[" + re.escape("".join(_ESCAPE_MAP)) + "]")
+
+_UNICODE_MATH_MAP = {
+    "∉": r"\(\notin\)",
+    "≠": r"\(\ne\)",
+    "∉": r"\(\notin\)",
+    "≤": r"\(\le\)",
+    "≥": r"\(\ge\)",
+    "≠": r"\(\ne\)",
+    "∈": r"\(\in\)",
+    "∅": r"\(\emptyset\)",
+    "∀": r"\(\forall\)",
+    "∃": r"\(\exists\)",
+    "⊆": r"\(\subseteq\)",
+    "⊂": r"\(\subset\)",
+    "∩": r"\(\cap\)",
+    "∪": r"\(\cup\)",
+    "⇒": r"\(\Rightarrow\)",
+    "⇐": r"\(\Leftarrow\)",
+    "⇔": r"\(\Leftrightarrow\)",
+    "↔": r"\(\leftrightarrow\)",
+    "→": r"\(\to\)",
+    "←": r"\(\leftarrow\)",
+    "∨": r"\(\vee\)",
+    "∧": r"\(\wedge\)",
+    "¬": r"\(\neg\)",
+    "ℵ": r"\(\aleph\)",
+    "ϵ": r"\(\epsilon\)",
+    "ε": r"\(\epsilon\)",
+    "ϕ": r"\(\phi\)",
+    "φ": r"\(\phi\)",
+    "α": r"\(\alpha\)",
+    "β": r"\(\beta\)",
+    "γ": r"\(\gamma\)",
+    "δ": r"\(\delta\)",
+    "η": r"\(\eta\)",
+    "θ": r"\(\theta\)",
+    "κ": r"\(\kappa\)",
+    "λ": r"\(\lambda\)",
+    "ξ": r"\(\xi\)",
+    "σ": r"\(\sigma\)",
+    "τ": r"\(\tau\)",
+    "ω": r"\(\omega\)",
+    "Π": r"\(\Pi\)",
+    "Θ": r"\(\Theta\)",
+    "′": r"\(^{\prime}\)",
+    "−": r"\(-\)",
+    "×": r"\(\times\)",
+    "±": r"\(\pm\)",
+    "∗": r"\(\ast\)",
+    "⋆": r"\(\star\)",
+    "⊕": r"\(\oplus\)",
+    "∫": r"\(\int\)",
+    "∑": r"\(\sum\)",
+    "√": r"\(\sqrt{\;}\)",
+    "∼": r"\(\sim\)",
+    "✓": r"\(\checkmark\)",
+    "◦": r"\(\circ\)",
+    "¯": r"\(\overline{\phantom{x}}\)",
+    "\u0338": "",
+}
+_UNICODE_MATH_RE = re.compile(
+    "|".join(
+        re.escape(symbol)
+        for symbol in sorted(_UNICODE_MATH_MAP, key=len, reverse=True)
+    )
+)
+
+_INVALID_CHAR_TRANSLATION = {
+    codepoint: None
+    for codepoint in range(32)
+    if codepoint not in (ord("\t"), ord("\n"), ord("\r"))
+}
+
+
 class LatexConverter:
     """Converts ExtractedContent to a complete LaTeX document string."""
 
@@ -136,93 +226,22 @@ class LatexConverter:
 
     def _clean_body_fragment(self, fragment: str) -> str:
         text = fragment.strip()
-        text = re.sub(r"\\documentclass(?:\[[^\]]*\])?\{[^}]+\}", "", text)
-        text = re.sub(r"\\usepackage(?:\[[^\]]*\])?\{[^}]+\}", "", text)
+        text = _DOCUMENTCLASS_RE.sub("", text)
+        text = _USEPACKAGE_RE.sub("", text)
         text = text.replace(r"\begin{document}", "")
         text = text.replace(r"\end{document}", "")
         return text.strip()
 
     def _escape_latex(self, text: str) -> str:
         text = self._strip_invalid_chars(text)
-        replacements = [
-            ("\\", r"\textbackslash{}"),
-            ("{", r"\{"),
-            ("}", r"\}"),
-            ("$", r"\$"),
-            ("&", r"\&"),
-            ("#", r"\#"),
-            ("^", r"\^{}"),
-            ("_", r"\_"),
-            ("%", r"\%"),
-            ("~", r"\textasciitilde{}"),
-        ]
-        for old, new in replacements:
-            text = text.replace(old, new)
+        text = _ESCAPE_RE.sub(lambda match: _ESCAPE_MAP[match.group(0)], text)
         return self._replace_unicode_math(text)
 
     def _strip_invalid_chars(self, text: str) -> str:
-        return "".join(ch for ch in text if ch in "\t\n\r" or ord(ch) >= 32)
+        return text.translate(_INVALID_CHAR_TRANSLATION)
 
     def _replace_unicode_math(self, text: str) -> str:
-        replacements = [
-            ("∉", r"\(\notin\)"),
-            ("≠", r"\(\ne\)"),
-            ("∉", r"\(\notin\)"),
-            ("≤", r"\(\le\)"),
-            ("≥", r"\(\ge\)"),
-            ("≠", r"\(\ne\)"),
-            ("∈", r"\(\in\)"),
-            ("∅", r"\(\emptyset\)"),
-            ("∀", r"\(\forall\)"),
-            ("∃", r"\(\exists\)"),
-            ("⊆", r"\(\subseteq\)"),
-            ("⊂", r"\(\subset\)"),
-            ("∩", r"\(\cap\)"),
-            ("∪", r"\(\cup\)"),
-            ("⇒", r"\(\Rightarrow\)"),
-            ("⇐", r"\(\Leftarrow\)"),
-            ("⇔", r"\(\Leftrightarrow\)"),
-            ("↔", r"\(\leftrightarrow\)"),
-            ("→", r"\(\to\)"),
-            ("←", r"\(\leftarrow\)"),
-            ("∨", r"\(\vee\)"),
-            ("∧", r"\(\wedge\)"),
-            ("¬", r"\(\neg\)"),
-            ("ℵ", r"\(\aleph\)"),
-            ("ϵ", r"\(\epsilon\)"),
-            ("ε", r"\(\epsilon\)"),
-            ("ϕ", r"\(\phi\)"),
-            ("φ", r"\(\phi\)"),
-            ("α", r"\(\alpha\)"),
-            ("β", r"\(\beta\)"),
-            ("γ", r"\(\gamma\)"),
-            ("δ", r"\(\delta\)"),
-            ("η", r"\(\eta\)"),
-            ("θ", r"\(\theta\)"),
-            ("κ", r"\(\kappa\)"),
-            ("λ", r"\(\lambda\)"),
-            ("ξ", r"\(\xi\)"),
-            ("σ", r"\(\sigma\)"),
-            ("τ", r"\(\tau\)"),
-            ("ω", r"\(\omega\)"),
-            ("Π", r"\(\Pi\)"),
-            ("Θ", r"\(\Theta\)"),
-            ("′", r"\(^{\prime}\)"),
-            ("−", r"\(-\)"),
-            ("×", r"\(\times\)"),
-            ("±", r"\(\pm\)"),
-            ("∗", r"\(\ast\)"),
-            ("⋆", r"\(\star\)"),
-            ("⊕", r"\(\oplus\)"),
-            ("∫", r"\(\int\)"),
-            ("∑", r"\(\sum\)"),
-            ("√", r"\(\sqrt{\;}\)"),
-            ("∼", r"\(\sim\)"),
-            ("✓", r"\(\checkmark\)"),
-            ("◦", r"\(\circ\)"),
-            ("¯", r"\(\overline{\phantom{x}}\)"),
-            ("\u0338", ""),
-        ]
-        for old, new in replacements:
-            text = text.replace(old, new)
-        return text
+        return _UNICODE_MATH_RE.sub(
+            lambda match: _UNICODE_MATH_MAP[match.group(0)],
+            text,
+        )
