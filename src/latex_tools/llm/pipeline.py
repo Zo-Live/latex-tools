@@ -9,6 +9,7 @@ from typing import Iterable, Iterator, Protocol, Sequence
 from ..convert.latex_converter import LatexConverter
 from ..extract.base import ImageRenderOptions, PdfDocumentChunk, PdfPageContext
 from ..extract.text_extractor import TextExtractor
+from .cache import ChunkCacheOptions, ChunkCacheRun
 from .client import LLMChunkResult
 
 
@@ -48,6 +49,7 @@ class LLMPdfConverter:
         image_dpi: int = 160,
         image_options: ImageRenderOptions | None = None,
         prefetch_chunks: int = 1,
+        cache_options: ChunkCacheOptions | None = None,
         extra_prompt: str = "",
     ):
         if chunk_pages <= 0:
@@ -66,6 +68,9 @@ class LLMPdfConverter:
             dpi_max=image_dpi,
         )
         self.prefetch_chunks = prefetch_chunks
+        self.cache_options = (
+            cache_options if cache_options is not None and cache_options.enabled else None
+        )
         self.extra_prompt = extra_prompt
         self.document_builder = LatexConverter()
 
@@ -80,6 +85,7 @@ class LLMPdfConverter:
         previous_latex_tail = ""
         document_title = pdf_path.stem
         saw_chunk = False
+        cache_run: ChunkCacheRun | None = None
 
         chunks = self.extractor.iter_context_chunks(
             pdf_path,
@@ -95,16 +101,35 @@ class LLMPdfConverter:
             for chunk in chunk_iterator:
                 if not saw_chunk:
                     document_title = chunk.title
+                    if self.cache_options is not None:
+                        cache_run = ChunkCacheRun(
+                            options=self.cache_options,
+                            pdf_path=pdf_path,
+                            pages=pages,
+                            document_title=chunk.title,
+                            chunk_pages=self.chunk_pages,
+                            image_dpi=self.image_dpi,
+                            image_options=self.image_options,
+                            extra_prompt=self.extra_prompt,
+                        )
                 saw_chunk = True
                 try:
-                    result = self.client.generate_latex_chunk(
-                        document_title=chunk.title,
-                        pages=chunk.pages,
-                        chunk_index=chunk.chunk_index,
-                        total_chunks=chunk.total_chunks,
-                        previous_latex_tail=previous_latex_tail,
-                        extra_prompt=self.extra_prompt,
+                    result = (
+                        cache_run.read(chunk, previous_latex_tail)
+                        if cache_run is not None
+                        else None
                     )
+                    if result is None:
+                        result = self.client.generate_latex_chunk(
+                            document_title=chunk.title,
+                            pages=chunk.pages,
+                            chunk_index=chunk.chunk_index,
+                            total_chunks=chunk.total_chunks,
+                            previous_latex_tail=previous_latex_tail,
+                            extra_prompt=self.extra_prompt,
+                        )
+                        if cache_run is not None:
+                            cache_run.write(chunk, previous_latex_tail, result)
                 finally:
                     _release_page_images(chunk.pages)
 

@@ -25,7 +25,7 @@ def test_parse_pages_rejects_invalid_range():
         _parse_pages("5-3")
 
 
-def test_build_converter_normalizes_image_options():
+def test_build_converter_normalizes_image_options(tmp_path):
     converter = _build_converter(
         model="test-model",
         api_key="test-key",
@@ -40,6 +40,7 @@ def test_build_converter_normalizes_image_options():
         image_format="jpg",
         jpeg_quality=92,
         prefetch_chunks=2,
+        cache_dir=tmp_path / "cache",
         client=DummyClient(),
     )
 
@@ -49,6 +50,61 @@ def test_build_converter_normalizes_image_options():
     assert converter.image_options.image_format == "jpeg"
     assert converter.image_options.jpeg_quality == 92
     assert converter.prefetch_chunks == 2
+    assert converter.cache_options is not None
+    assert converter.cache_options.cache_dir == tmp_path / "cache"
+    assert converter.cache_options.llm_model == "test-model"
+    assert converter.cache_options.clear is False
+
+
+def test_build_converter_supports_cache_controls(tmp_path):
+    disabled = _build_converter(
+        model="test-model",
+        api_key="test-key",
+        base_url=None,
+        temperature=1.0,
+        timeout=10.0,
+        max_tokens=128,
+        chunk_pages=2,
+        image_dpi=144,
+        cache_dir=tmp_path / "cache",
+        no_cache=True,
+        client=DummyClient(),
+    )
+
+    assert disabled.cache_options is None
+
+    clearing = _build_converter(
+        model="test-model",
+        api_key="test-key",
+        base_url=None,
+        temperature=1.0,
+        timeout=10.0,
+        max_tokens=128,
+        chunk_pages=2,
+        image_dpi=144,
+        cache_dir=tmp_path / "cache",
+        clear_cache=True,
+        client=DummyClient(),
+    )
+
+    assert clearing.cache_options is not None
+    assert clearing.cache_options.clear is True
+
+    with pytest.raises(typer.BadParameter, match="clear-cache"):
+        _build_converter(
+            model="test-model",
+            api_key="test-key",
+            base_url=None,
+            temperature=1.0,
+            timeout=10.0,
+            max_tokens=128,
+            chunk_pages=2,
+            image_dpi=144,
+            cache_dir=tmp_path / "cache",
+            no_cache=True,
+            clear_cache=True,
+            client=DummyClient(),
+        )
 
 
 def test_build_converter_rejects_invalid_image_settings():

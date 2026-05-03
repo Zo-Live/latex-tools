@@ -70,6 +70,12 @@ uv run latex-tools batch docs/ -o src/
 - `extract -o` 的相对路径按仓库根目录解析；只给文件名时默认写入 `src/`。
 - `batch docs/ -o src/` 会把 `docs/` 下的 PDF 转成同名 `.tex` 并写入 `src/`。
 
+断点续传缓存：
+
+- CLI 默认启用 chunk 级缓存，目录为 `build/.latex_tools_cache/`。
+- 重跑相同 PDF、页码和转换参数时会复用已完成 chunk；失败后可从已完成 chunk 继续。
+- 使用 `--no-cache` 禁用缓存，`--clear-cache` 清理当前 PDF/参数对应缓存，`--cache-dir` 指定缓存目录。
+
 转换流程当前会：
 
 - 先用 `pymupdf` 提取页级文本、位置、字号，并渲染页面图像。
@@ -91,7 +97,7 @@ uv run latex-tools batch docs/ -o src/
 perl -c .latexmkrc
 bash -n scripts/post-build.sh
 python3 -m json.tool LaTeX.code-workspace
-python3 -m py_compile src/latex_tools/cli.py src/latex_tools/convert/latex_converter.py src/latex_tools/extract/base.py src/latex_tools/extract/text_extractor.py src/latex_tools/llm/config.py src/latex_tools/llm/client.py src/latex_tools/llm/pipeline.py src/latex_tools/llm/prompts.py
+python3 -m py_compile src/latex_tools/cli.py src/latex_tools/convert/latex_converter.py src/latex_tools/extract/base.py src/latex_tools/extract/text_extractor.py src/latex_tools/llm/cache.py src/latex_tools/llm/config.py src/latex_tools/llm/client.py src/latex_tools/llm/pipeline.py src/latex_tools/llm/prompts.py
 latexmk src/test.tex
 ```
 

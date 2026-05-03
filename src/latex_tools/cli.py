@@ -6,6 +6,7 @@ from typing import Optional
 import typer
 
 from .extract.base import ImageRenderOptions
+from .llm.cache import ChunkCacheOptions
 from .llm.client import OpenAICompatibleClient
 from .llm.config import LLMConfig, LLMConfigError
 from .llm.pipeline import LLMPdfConverter
@@ -103,6 +104,9 @@ def _build_converter(
     image_format: str = "png",
     jpeg_quality: int = 85,
     prefetch_chunks: int = 1,
+    cache_dir: Path = Path("build/.latex_tools_cache"),
+    no_cache: bool = False,
+    clear_cache: bool = False,
     extra_prompt: Optional[str] = None,
     client: Optional[OpenAICompatibleClient] = None,
 ) -> LLMPdfConverter:
@@ -124,16 +128,29 @@ def _build_converter(
         )
         if prefetch_chunks < 0:
             raise ValueError("prefetch_chunks must be non-negative.")
+        if no_cache and clear_cache:
+            raise ValueError("--clear-cache cannot be used with --no-cache.")
     except (LLMConfigError, ValueError) as exc:
         raise typer.BadParameter(str(exc)) from exc
 
     llm_client = client or OpenAICompatibleClient(config)
+    cache_options = None
+    if not no_cache:
+        cache_options = ChunkCacheOptions(
+            cache_dir=_resolve_output_dir(cache_dir),
+            clear=clear_cache,
+            llm_model=config.model,
+            llm_base_url=config.base_url,
+            llm_temperature=config.temperature,
+            llm_max_tokens=config.max_tokens,
+        )
     return LLMPdfConverter(
         llm_client,
         chunk_pages=chunk_pages,
         image_dpi=image_dpi,
         image_options=image_options,
         prefetch_chunks=prefetch_chunks,
+        cache_options=cache_options,
         extra_prompt=extra_prompt or "",
     )
 
@@ -202,6 +219,21 @@ def extract(
     prefetch_chunks: int = typer.Option(
         1, "--prefetch-chunks", help="Number of future chunks to pre-render"
     ),
+    cache_dir: Path = typer.Option(
+        Path("build/.latex_tools_cache"),
+        "--cache-dir",
+        help="Directory for resumable chunk cache",
+    ),
+    no_cache: bool = typer.Option(
+        False,
+        "--no-cache",
+        help="Disable resumable chunk cache",
+    ),
+    clear_cache: bool = typer.Option(
+        False,
+        "--clear-cache",
+        help="Clear matching chunk cache before conversion",
+    ),
     extra_prompt: Optional[str] = typer.Option(
         None, "--extra-prompt", help="额外的系统提示文字（追加到默认要求之后）"
     ),
@@ -225,6 +257,9 @@ def extract(
         image_format=image_format,
         jpeg_quality=jpeg_quality,
         prefetch_chunks=prefetch_chunks,
+        cache_dir=cache_dir,
+        no_cache=no_cache,
+        clear_cache=clear_cache,
         extra_prompt=extra_prompt,
     )
     result = converter.convert(pdf_path, pages=_parse_pages(pages))
@@ -307,6 +342,21 @@ def batch(
     prefetch_chunks: int = typer.Option(
         1, "--prefetch-chunks", help="Number of future chunks to pre-render"
     ),
+    cache_dir: Path = typer.Option(
+        Path("build/.latex_tools_cache"),
+        "--cache-dir",
+        help="Directory for resumable chunk cache",
+    ),
+    no_cache: bool = typer.Option(
+        False,
+        "--no-cache",
+        help="Disable resumable chunk cache",
+    ),
+    clear_cache: bool = typer.Option(
+        False,
+        "--clear-cache",
+        help="Clear matching chunk cache before conversion",
+    ),
     extra_prompt: Optional[str] = typer.Option(
         None, "--extra-prompt", help="额外的系统提示文字（追加到默认要求之后）"
     ),
@@ -330,6 +380,9 @@ def batch(
         image_format=image_format,
         jpeg_quality=jpeg_quality,
         prefetch_chunks=prefetch_chunks,
+        cache_dir=cache_dir,
+        no_cache=no_cache,
+        clear_cache=clear_cache,
         extra_prompt=extra_prompt,
     )
     output_dir = _resolve_output_dir(output_dir)

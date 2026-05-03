@@ -1,5 +1,6 @@
 """Tests for the LLM PDF conversion pipeline."""
 
+import json
 from pathlib import Path
 import threading
 
@@ -11,6 +12,7 @@ from latex_tools.extract.base import (
     PdfDocumentChunk,
     PdfPageContext,
 )
+from latex_tools.llm.cache import ChunkCacheOptions, ChunkCacheRun
 from latex_tools.llm.pipeline import (
     LLMPdfConverter,
     _append_tail,
@@ -122,6 +124,13 @@ class WaitingRaisingClient:
         raise RuntimeError("LLM failed")
 
 
+class FailingSecondChunkClient(FakeClient):
+    def generate_latex_chunk(self, **kwargs):
+        if kwargs["chunk_index"] == 2:
+            raise RuntimeError("LLM failed")
+        return super().generate_latex_chunk(**kwargs)
+
+
 class EventingExtractor(FakeExtractor):
     def __init__(self, pages, second_chunk_ready):
         super().__init__(pages)
@@ -141,6 +150,55 @@ def _chunk(index, page):
         chunk_index=index,
         total_chunks=2,
         pages=[page],
+    )
+
+
+def _page(page_number, *, image_base64="image"):
+    return PdfPageContext(
+        page_number=page_number,
+        width=1,
+        height=1,
+        image_base64=image_base64,
+    )
+
+
+def _build_cache_run(
+    tmp_path,
+    *,
+    pages=None,
+    chunk_pages=1,
+    image_dpi=160,
+    image_options=None,
+    extra_prompt="",
+    model="test-model",
+    base_url=None,
+    temperature=1.0,
+    max_tokens=128000,
+):
+    pdf_path = tmp_path / "sample.pdf"
+    pdf_path.write_bytes(b"sample-pdf-bytes")
+    return ChunkCacheRun(
+        options=ChunkCacheOptions(
+            cache_dir=tmp_path / "cache",
+            llm_model=model,
+            llm_base_url=base_url,
+            llm_temperature=temperature,
+            llm_max_tokens=max_tokens,
+        ),
+        pdf_path=pdf_path,
+        pages=pages,
+        document_title="sample",
+        chunk_pages=chunk_pages,
+        image_dpi=image_dpi,
+        image_options=image_options
+        or ImageRenderOptions(
+            dpi=image_dpi,
+            dpi_min=100,
+            dpi_max=image_dpi,
+            image_format="png",
+            jpeg_quality=85,
+        ),
+        extra_prompt=extra_prompt,
     )
 
 
@@ -205,6 +263,241 @@ def test_pipeline_chunks_pages_and_builds_document():
     assert client.calls[1]["pages"] == [3]
     assert client.calls[1]["previous_latex_tail"]
     assert all(page.image_base64 is None for chunk in extractor.chunks for page in chunk.pages)
+
+
+def test_pipeline_reuses_chunk_cache_after_successful_run(tmp_path):
+    pdf_path = tmp_path / "sample.pdf"
+    pdf_path.write_bytes(b"sample-pdf-bytes")
+    cache_options = ChunkCacheOptions(
+        cache_dir=tmp_path / "cache",
+        llm_model="test-model",
+    )
+    first_pages = [_page(1, image_base64="page-1"), _page(2, image_base64="page-2")]
+    first_extractor = FakeExtractor(first_pages)
+    first_client = FakeClient(
+        latex_fragments=[
+            "first-cached",
+            "second-cached",
+        ]
+    )
+    first_converter = LLMPdfConverter(
+        first_client,
+        extractor=first_extractor,
+        chunk_pages=1,
+        cache_options=cache_options,
+    )
+
+    first_result = first_converter.convert(pdf_path)
+
+    assert "first-cached" in first_result.latex
+    assert "second-cached" in first_result.latex
+    assert len(first_client.calls) == 2
+    assert len(list((cache_options.cache_dir).rglob("chunk-*.json"))) == 2
+
+    second_pages = [_page(1, image_base64="page-1"), _page(2, image_base64="page-2")]
+    second_extractor = FakeExtractor(second_pages)
+    second_converter = LLMPdfConverter(
+        RaisingClient(),
+        extractor=second_extractor,
+        chunk_pages=1,
+        cache_options=cache_options,
+    )
+
+    second_result = second_converter.convert(pdf_path)
+
+    assert "first-cached" in second_result.latex
+    assert "second-cached" in second_result.latex
+    assert second_extractor.calls[0]["chunk_size"] == 1
+    assert all(page.image_base64 is None for chunk in second_extractor.chunks for page in chunk.pages)
+
+
+def test_pipeline_reuses_completed_cache_after_later_chunk_failure(tmp_path):
+    pdf_path = tmp_path / "sample.pdf"
+    pdf_path.write_bytes(b"sample-pdf-bytes")
+    cache_options = ChunkCacheOptions(
+        cache_dir=tmp_path / "cache",
+        llm_model="test-model",
+    )
+    first_pages = [_page(1, image_base64="page-1"), _page(2, image_base64="page-2")]
+    first_extractor = FakeExtractor(first_pages)
+    first_client = FailingSecondChunkClient(
+        latex_fragments=[
+            "first-cached",
+            "unused",
+        ]
+    )
+    first_converter = LLMPdfConverter(
+        first_client,
+        extractor=first_extractor,
+        chunk_pages=1,
+        cache_options=cache_options,
+    )
+
+    with pytest.raises(RuntimeError, match="LLM failed"):
+        first_converter.convert(pdf_path)
+
+    cache_files = list((cache_options.cache_dir).rglob("chunk-*.json"))
+    assert len(cache_files) == 1
+
+    second_pages = [_page(1, image_base64="page-1"), _page(2, image_base64="page-2")]
+    second_extractor = FakeExtractor(second_pages)
+    second_client = FakeClient(
+        latex_fragments=[
+            "unused",
+            "second-fresh",
+        ]
+    )
+    second_converter = LLMPdfConverter(
+        second_client,
+        extractor=second_extractor,
+        chunk_pages=1,
+        cache_options=cache_options,
+    )
+
+    second_result = second_converter.convert(pdf_path)
+
+    assert len(second_client.calls) == 1
+    assert second_client.calls[0]["chunk_index"] == 2
+    assert second_client.calls[0]["previous_latex_tail"] == _tail("first-cached")
+    assert "first-cached" in second_result.latex
+    assert "second-fresh" in second_result.latex
+
+
+def test_pipeline_misses_later_cache_when_previous_tail_changes(tmp_path):
+    pdf_path = tmp_path / "sample.pdf"
+    pdf_path.write_bytes(b"sample-pdf-bytes")
+    cache_options = ChunkCacheOptions(
+        cache_dir=tmp_path / "cache",
+        llm_model="test-model",
+    )
+    first_extractor = FakeExtractor(
+        [_page(1, image_base64="page-1"), _page(2, image_base64="page-2")]
+    )
+    first_client = FakeClient(
+        latex_fragments=[
+            "old-first",
+            "old-second",
+        ]
+    )
+    first_converter = LLMPdfConverter(
+        first_client,
+        extractor=first_extractor,
+        chunk_pages=1,
+        cache_options=cache_options,
+    )
+
+    first_converter.convert(pdf_path)
+
+    first_cache_file = sorted((cache_options.cache_dir).rglob("chunk-*.json"))[0]
+    cache_data = json.loads(first_cache_file.read_text(encoding="utf-8"))
+    cache_data["latex"] = "new-first"
+    first_cache_file.write_text(
+        json.dumps(cache_data, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    second_extractor = FakeExtractor(
+        [_page(1, image_base64="page-1"), _page(2, image_base64="page-2")]
+    )
+    second_client = FakeClient(
+        latex_fragments=[
+            "unused",
+            "fresh-second",
+        ]
+    )
+    second_converter = LLMPdfConverter(
+        second_client,
+        extractor=second_extractor,
+        chunk_pages=1,
+        cache_options=cache_options,
+    )
+
+    second_result = second_converter.convert(pdf_path)
+
+    assert len(second_client.calls) == 1
+    assert second_client.calls[0]["chunk_index"] == 2
+    assert second_client.calls[0]["previous_latex_tail"] == _tail("new-first")
+    assert "new-first" in second_result.latex
+    assert "fresh-second" in second_result.latex
+    assert "old-second" not in second_result.latex
+
+
+def test_pipeline_rebuilds_cache_when_entries_are_corrupted(tmp_path):
+    pdf_path = tmp_path / "sample.pdf"
+    pdf_path.write_bytes(b"sample-pdf-bytes")
+    cache_options = ChunkCacheOptions(
+        cache_dir=tmp_path / "cache",
+        llm_model="test-model",
+    )
+    pages = [_page(1, image_base64="page-1")]
+    extractor = FakeExtractor(pages)
+    client = FakeClient(latex_fragments=["cached"])
+    converter = LLMPdfConverter(
+        client,
+        extractor=extractor,
+        chunk_pages=1,
+        cache_options=cache_options,
+    )
+
+    converter.convert(pdf_path)
+
+    cache_file = next((cache_options.cache_dir).rglob("chunk-*.json"))
+    cache_file.write_text("{not-json", encoding="utf-8")
+
+    fresh_extractor = FakeExtractor([_page(1, image_base64="page-1")])
+    fresh_client = FakeClient(latex_fragments=["fresh"])
+    fresh_converter = LLMPdfConverter(
+        fresh_client,
+        extractor=fresh_extractor,
+        chunk_pages=1,
+        cache_options=cache_options,
+    )
+
+    fresh_result = fresh_converter.convert(pdf_path)
+
+    assert len(fresh_client.calls) == 1
+    assert "fresh" in fresh_result.latex
+    assert "fresh" in cache_file.read_text(encoding="utf-8")
+
+
+def test_pipeline_clears_cache_when_requested(tmp_path):
+    pdf_path = tmp_path / "sample.pdf"
+    pdf_path.write_bytes(b"sample-pdf-bytes")
+    cache_dir = tmp_path / "cache"
+    cache_options = ChunkCacheOptions(
+        cache_dir=cache_dir,
+        llm_model="test-model",
+    )
+    first_extractor = FakeExtractor([_page(1, image_base64="page-1")])
+    first_client = FakeClient(latex_fragments=["old"])
+    first_converter = LLMPdfConverter(
+        first_client,
+        extractor=first_extractor,
+        chunk_pages=1,
+        cache_options=cache_options,
+    )
+
+    first_converter.convert(pdf_path)
+
+    clear_options = ChunkCacheOptions(
+        cache_dir=cache_dir,
+        clear=True,
+        llm_model="test-model",
+    )
+    second_extractor = FakeExtractor([_page(1, image_base64="page-1")])
+    second_client = FakeClient(latex_fragments=["new"])
+    second_converter = LLMPdfConverter(
+        second_client,
+        extractor=second_extractor,
+        chunk_pages=1,
+        cache_options=clear_options,
+    )
+
+    second_result = second_converter.convert(pdf_path)
+
+    assert len(second_client.calls) == 1
+    assert "new" in second_result.latex
+    assert "old" not in second_result.latex
 
 
 def test_prefetch_iterator_starts_next_chunk_after_yielding_current():
@@ -355,6 +648,36 @@ def test_pipeline_uses_custom_image_options():
     converter.convert(Path("docs/sample.pdf"))
 
     assert extractor.calls[0]["image_options"] is image_options
+
+
+def test_chunk_cache_run_key_changes_with_inputs(tmp_path):
+    base = _build_cache_run(tmp_path)
+
+    assert _build_cache_run(tmp_path, pages=[2, 1]).run_key == _build_cache_run(
+        tmp_path,
+        pages=[1, 2],
+    ).run_key
+    assert base.run_key != _build_cache_run(tmp_path, pages=[2]).run_key
+    assert base.run_key != _build_cache_run(tmp_path, chunk_pages=2).run_key
+    assert base.run_key != _build_cache_run(tmp_path, extra_prompt="额外要求").run_key
+    assert base.run_key != _build_cache_run(
+        tmp_path,
+        image_options=ImageRenderOptions(
+            dpi=120,
+            dpi_min=90,
+            dpi_max=180,
+            image_format="jpeg",
+            jpeg_quality=92,
+        ),
+        image_dpi=120,
+    ).run_key
+    assert base.run_key != _build_cache_run(tmp_path, model="other-model").run_key
+    assert base.run_key != _build_cache_run(
+        tmp_path,
+        base_url="https://example.com",
+    ).run_key
+    assert base.run_key != _build_cache_run(tmp_path, temperature=0.5).run_key
+    assert base.run_key != _build_cache_run(tmp_path, max_tokens=4096).run_key
 
 
 def test_pipeline_supports_disabled_prefetch():
