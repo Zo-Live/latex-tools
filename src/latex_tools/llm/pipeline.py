@@ -1,11 +1,13 @@
 """LLM-driven PDF to LaTeX conversion pipeline."""
 
+from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol, Sequence
+from typing import Iterable, Iterator, Protocol, Sequence
 
 from ..convert.latex_converter import LatexConverter
-from ..extract.base import ImageRenderOptions, PdfPageContext
+from ..extract.base import ImageRenderOptions, PdfDocumentChunk, PdfPageContext
 from ..extract.text_extractor import TextExtractor
 from .client import LLMChunkResult
 
@@ -45,12 +47,15 @@ class LLMPdfConverter:
         chunk_pages: int = 4,
         image_dpi: int = 160,
         image_options: ImageRenderOptions | None = None,
+        prefetch_chunks: int = 1,
         extra_prompt: str = "",
     ):
         if chunk_pages <= 0:
             raise ValueError("chunk_pages must be positive.")
         if image_dpi <= 0:
             raise ValueError("image_dpi must be positive.")
+        if prefetch_chunks < 0:
+            raise ValueError("prefetch_chunks must be non-negative.")
 
         self.client = client
         self.extractor = extractor or TextExtractor()
@@ -60,6 +65,7 @@ class LLMPdfConverter:
             dpi=image_dpi,
             dpi_max=image_dpi,
         )
+        self.prefetch_chunks = prefetch_chunks
         self.extra_prompt = extra_prompt
         self.document_builder = LatexConverter()
 
@@ -75,36 +81,44 @@ class LLMPdfConverter:
         document_title = pdf_path.stem
         saw_chunk = False
 
-        for chunk in self.extractor.iter_context_chunks(
+        chunks = self.extractor.iter_context_chunks(
             pdf_path,
             pages=pages,
             image_dpi=self.image_dpi,
             include_images=True,
             image_options=self.image_options,
             chunk_size=self.chunk_pages,
-        ):
-            if not saw_chunk:
-                document_title = chunk.title
-            saw_chunk = True
-            try:
-                result = self.client.generate_latex_chunk(
-                    document_title=chunk.title,
-                    pages=chunk.pages,
-                    chunk_index=chunk.chunk_index,
-                    total_chunks=chunk.total_chunks,
-                    previous_latex_tail=previous_latex_tail,
-                    extra_prompt=self.extra_prompt,
-                )
-            finally:
-                _release_page_images(chunk.pages)
+        )
 
-            previous_latex_tail = _append_tail(
-                previous_latex_tail,
-                result.latex,
-                has_previous_fragment=bool(fragments),
-            )
-            fragments.append(result.latex)
-            notes.extend(result.notes)
+        chunk_iterator = _iter_prefetched_chunks(chunks, self.prefetch_chunks)
+        try:
+            for chunk in chunk_iterator:
+                if not saw_chunk:
+                    document_title = chunk.title
+                saw_chunk = True
+                try:
+                    result = self.client.generate_latex_chunk(
+                        document_title=chunk.title,
+                        pages=chunk.pages,
+                        chunk_index=chunk.chunk_index,
+                        total_chunks=chunk.total_chunks,
+                        previous_latex_tail=previous_latex_tail,
+                        extra_prompt=self.extra_prompt,
+                    )
+                finally:
+                    _release_page_images(chunk.pages)
+
+                previous_latex_tail = _append_tail(
+                    previous_latex_tail,
+                    result.latex,
+                    has_previous_fragment=bool(fragments),
+                )
+                fragments.append(result.latex)
+                notes.extend(result.notes)
+        finally:
+            close = getattr(chunk_iterator, "close", None)
+            if close is not None:
+                close()
 
         if not saw_chunk:
             raise ValueError("No pages were selected for conversion.")
@@ -147,3 +161,51 @@ def _append_tail(
 def _release_page_images(pages: Sequence[PdfPageContext]) -> None:
     for page in pages:
         page.image_base64 = None
+
+
+def _iter_prefetched_chunks(
+    chunks: Iterable[PdfDocumentChunk],
+    prefetch_chunks: int,
+) -> Iterator[PdfDocumentChunk]:
+    if prefetch_chunks <= 0:
+        yield from chunks
+        return
+
+    iterator = iter(chunks)
+    executor = ThreadPoolExecutor(max_workers=1)
+    futures: deque[Future[PdfDocumentChunk]] = deque()
+
+    def fill_prefetch_queue() -> None:
+        while len(futures) < prefetch_chunks:
+            futures.append(executor.submit(next, iterator))
+
+    try:
+        futures.append(executor.submit(next, iterator))
+        while futures:
+            future = futures.popleft()
+            try:
+                chunk = future.result()
+            except StopIteration:
+                break
+            fill_prefetch_queue()
+            yield chunk
+    finally:
+        for future in futures:
+            future.cancel()
+        executor.shutdown(wait=True, cancel_futures=True)
+        _release_future_chunk_images(futures)
+
+        close = getattr(iterator, "close", None)
+        if close is not None:
+            close()
+
+
+def _release_future_chunk_images(futures: Iterable[Future[PdfDocumentChunk]]) -> None:
+    for future in futures:
+        if future.cancelled() or not future.done():
+            continue
+        try:
+            chunk = future.result()
+        except Exception:
+            continue
+        _release_page_images(chunk.pages)

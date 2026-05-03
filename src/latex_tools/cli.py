@@ -102,6 +102,7 @@ def _build_converter(
     image_dpi_max: Optional[int] = None,
     image_format: str = "png",
     jpeg_quality: int = 85,
+    prefetch_chunks: int = 1,
     extra_prompt: Optional[str] = None,
     client: Optional[OpenAICompatibleClient] = None,
 ) -> LLMPdfConverter:
@@ -121,6 +122,8 @@ def _build_converter(
             image_format=image_format,
             jpeg_quality=jpeg_quality,
         )
+        if prefetch_chunks < 0:
+            raise ValueError("prefetch_chunks must be non-negative.")
     except (LLMConfigError, ValueError) as exc:
         raise typer.BadParameter(str(exc)) from exc
 
@@ -130,6 +133,7 @@ def _build_converter(
         chunk_pages=chunk_pages,
         image_dpi=image_dpi,
         image_options=image_options,
+        prefetch_chunks=prefetch_chunks,
         extra_prompt=extra_prompt or "",
     )
 
@@ -195,6 +199,9 @@ def extract(
     jpeg_quality: int = typer.Option(
         85, "--jpeg-quality", help="JPEG quality for rendered page images"
     ),
+    prefetch_chunks: int = typer.Option(
+        1, "--prefetch-chunks", help="Number of future chunks to pre-render"
+    ),
     extra_prompt: Optional[str] = typer.Option(
         None, "--extra-prompt", help="额外的系统提示文字（追加到默认要求之后）"
     ),
@@ -217,6 +224,7 @@ def extract(
         image_dpi_max=image_dpi_max,
         image_format=image_format,
         jpeg_quality=jpeg_quality,
+        prefetch_chunks=prefetch_chunks,
         extra_prompt=extra_prompt,
     )
     result = converter.convert(pdf_path, pages=_parse_pages(pages))
@@ -296,6 +304,9 @@ def batch(
     jpeg_quality: int = typer.Option(
         85, "--jpeg-quality", help="JPEG quality for rendered page images"
     ),
+    prefetch_chunks: int = typer.Option(
+        1, "--prefetch-chunks", help="Number of future chunks to pre-render"
+    ),
     extra_prompt: Optional[str] = typer.Option(
         None, "--extra-prompt", help="额外的系统提示文字（追加到默认要求之后）"
     ),
@@ -318,6 +329,7 @@ def batch(
         image_dpi_max=image_dpi_max,
         image_format=image_format,
         jpeg_quality=jpeg_quality,
+        prefetch_chunks=prefetch_chunks,
         extra_prompt=extra_prompt,
     )
     output_dir = _resolve_output_dir(output_dir)

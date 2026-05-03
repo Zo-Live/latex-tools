@@ -39,6 +39,7 @@ def test_build_converter_normalizes_image_options():
         image_dpi_max=None,
         image_format="jpg",
         jpeg_quality=92,
+        prefetch_chunks=2,
         client=DummyClient(),
     )
 
@@ -47,6 +48,7 @@ def test_build_converter_normalizes_image_options():
     assert converter.image_options.dpi_max == 144
     assert converter.image_options.image_format == "jpeg"
     assert converter.image_options.jpeg_quality == 92
+    assert converter.prefetch_chunks == 2
 
 
 def test_build_converter_rejects_invalid_image_settings():
@@ -90,5 +92,19 @@ def test_build_converter_rejects_invalid_image_settings():
             chunk_pages=2,
             image_dpi=144,
             jpeg_quality=0,
+            client=DummyClient(),
+        )
+
+    with pytest.raises(typer.BadParameter):
+        _build_converter(
+            model="test-model",
+            api_key="test-key",
+            base_url=None,
+            temperature=1.0,
+            timeout=10.0,
+            max_tokens=128,
+            chunk_pages=2,
+            image_dpi=144,
+            prefetch_chunks=-1,
             client=DummyClient(),
         )
