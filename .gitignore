@@ -362,6 +362,12 @@ __pycache__/
 dist/
 .venv/
 
+### Pytest ###
+.pytest_cache
+
 ### Project ###
 docs/
 src/*.tex
+.codex
+.claude
+.agents

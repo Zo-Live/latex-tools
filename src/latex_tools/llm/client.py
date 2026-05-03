@@ -1,0 +1,185 @@
+"""OpenAI-compatible chat client for LaTeX generation."""
+
+import json
+import re
+from dataclasses import dataclass, field
+from typing import Any, Mapping, Sequence
+
+from ..extract.base import PdfPageContext
+from .config import LLMConfig
+from .prompts import build_chunk_messages
+
+
+class LLMResponseError(RuntimeError):
+    """Raised when the LLM response cannot be used."""
+
+
+@dataclass
+class LLMChunkResult:
+    """Parsed result for one converted PDF chunk."""
+
+    latex: str
+    notes: list[str] = field(default_factory=list)
+
+
+class OpenAICompatibleClient:
+    """Thin wrapper around the OpenAI Python SDK with compatible base_url."""
+
+    def __init__(self, config: LLMConfig):
+        self.config = config
+        try:
+            from openai import OpenAI
+        except ImportError as exc:
+            raise LLMResponseError(
+                "The openai package is required. Run `uv sync` first."
+            ) from exc
+
+        kwargs: dict[str, Any] = {
+            "api_key": config.api_key,
+            "timeout": config.timeout,
+        }
+        if config.base_url:
+            kwargs["base_url"] = config.base_url
+        self._client = OpenAI(**kwargs)
+
+    def generate_latex_chunk(
+        self,
+        *,
+        document_title: str,
+        pages: Sequence[PdfPageContext],
+        chunk_index: int,
+        total_chunks: int,
+        previous_latex_tail: str = "",
+    ) -> LLMChunkResult:
+        messages = build_chunk_messages(
+            document_title=document_title,
+            pages=pages,
+            chunk_index=chunk_index,
+            total_chunks=total_chunks,
+            previous_latex_tail=previous_latex_tail,
+        )
+        request_kwargs = {
+            "model": self.config.model,
+            "messages": messages,
+            "temperature": self.config.temperature,
+        }
+        try:
+            response = self._client.chat.completions.create(
+                **request_kwargs,
+                response_format={"type": "json_object"},
+            )
+        except Exception as exc:  # pragma: no cover - backend specific fallback
+            if "response_format" not in str(exc):
+                raise
+            response = self._client.chat.completions.create(**request_kwargs)
+        content = response.choices[0].message.content
+        if not isinstance(content, str):
+            raise LLMResponseError("LLM response content is empty or not text.")
+        return parse_chunk_response(content)
+
+
+def parse_chunk_response(raw_content: str) -> LLMChunkResult:
+    """Parse the expected JSON object from an LLM response."""
+    data = _load_json_object(_strip_code_fence(raw_content))
+    latex = data.get("latex")
+    if not isinstance(latex, str) or not latex.strip():
+        raise LLMResponseError("LLM response JSON must contain a non-empty latex field.")
+
+    notes_value = data.get("notes", [])
+    if notes_value is None:
+        notes = []
+    elif isinstance(notes_value, list):
+        notes = [str(note) for note in notes_value if str(note).strip()]
+    else:
+        notes = [str(notes_value)]
+
+    return LLMChunkResult(latex=latex.strip(), notes=notes)
+
+
+def _strip_code_fence(text: str) -> str:
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return stripped
+
+    lines = stripped.splitlines()
+    if lines and lines[0].startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def _load_json_object(text: str) -> Mapping[str, Any]:
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        data = _load_loose_json_object(text)
+        if data is None:
+            start = text.find("{")
+            end = text.rfind("}")
+            if start < 0 or end <= start:
+                raise LLMResponseError("LLM response is not valid JSON.") from None
+            try:
+                data = json.loads(text[start : end + 1])
+            except json.JSONDecodeError as exc:
+                raise LLMResponseError("LLM response is not valid JSON.") from exc
+
+    if not isinstance(data, dict):
+        raise LLMResponseError("LLM response JSON must be an object.")
+    if _latex_has_json_escape_damage(data.get("latex")):
+        loose_data = _load_loose_json_object(text)
+        if loose_data is not None:
+            return loose_data
+    return data
+
+
+def _load_loose_json_object(text: str) -> Mapping[str, Any] | None:
+    latex = _extract_loose_string(text, "latex")
+    if latex is None:
+        return None
+
+    notes: list[str] = []
+    notes_match = re.search(r'"notes"\s*:\s*(\[[\s\S]*?\])', text)
+    if notes_match:
+        try:
+            notes_value = json.loads(notes_match.group(1))
+        except json.JSONDecodeError:
+            notes_value = []
+        if isinstance(notes_value, list):
+            notes = [str(note) for note in notes_value if str(note).strip()]
+
+    return {"latex": latex, "notes": notes}
+
+
+def _extract_loose_string(text: str, key: str) -> str | None:
+    key_match = re.search(rf'"{re.escape(key)}"\s*:', text)
+    if not key_match:
+        return None
+    start = text.find('"', key_match.end())
+    if start < 0:
+        return None
+
+    chars: list[str] = []
+    index = start + 1
+    while index < len(text):
+        char = text[index]
+        if char == '"' and _looks_like_string_end(text, index):
+            return "".join(chars)
+        if char == "\\" and index + 1 < len(text) and text[index + 1] == '"':
+            chars.append('"')
+            index += 2
+            continue
+        chars.append(char)
+        index += 1
+    return None
+
+
+def _looks_like_string_end(text: str, quote_index: int) -> bool:
+    tail = text[quote_index + 1 :].lstrip()
+    return tail.startswith(",") or tail.startswith("}")
+
+
+def _latex_has_json_escape_damage(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    return any(char in value for char in ("\b", "\f", "\r"))

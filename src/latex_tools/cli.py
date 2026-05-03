@@ -5,8 +5,9 @@ from typing import Optional
 
 import typer
 
-from .extract.text_extractor import TextExtractor
-from .convert.latex_converter import LatexConverter
+from .llm.client import OpenAICompatibleClient
+from .llm.config import LLMConfig, LLMConfigError
+from .llm.pipeline import LLMPdfConverter
 
 
 def _repo_root() -> Path:
@@ -48,8 +49,72 @@ def _resolve_output_dir(path: Path) -> Path:
 
 app = typer.Typer(
     name="latex-tools",
-    help="Extract content from PDFs and convert to LaTeX source.",
+    help="Convert PDFs to LaTeX source using an LLM-assisted pipeline.",
 )
+
+
+def _parse_pages(pages: Optional[str]) -> Optional[list[int]]:
+    if pages is None or not pages.strip():
+        return None
+
+    resolved: list[int] = []
+    for chunk in pages.split(","):
+        item = chunk.strip()
+        if not item:
+            continue
+        if "-" in item:
+            start_text, end_text = item.split("-", 1)
+            start = int(start_text.strip())
+            end = int(end_text.strip())
+            if start <= 0 or end <= 0 or end < start:
+                raise typer.BadParameter(f"Invalid page range: {item}")
+            resolved.extend(range(start, end + 1))
+        else:
+            page = int(item)
+            if page <= 0:
+                raise typer.BadParameter(f"Invalid page number: {item}")
+            resolved.append(page)
+
+    if not resolved:
+        raise typer.BadParameter("No valid pages were parsed.")
+    seen: set[int] = set()
+    unique_pages: list[int] = []
+    for page in resolved:
+        if page in seen:
+            continue
+        seen.add(page)
+        unique_pages.append(page)
+    return unique_pages
+
+
+def _build_converter(
+    *,
+    model: Optional[str],
+    api_key: Optional[str],
+    base_url: Optional[str],
+    temperature: float,
+    timeout: float,
+    chunk_pages: int,
+    image_dpi: int,
+    client: Optional[OpenAICompatibleClient] = None,
+) -> LLMPdfConverter:
+    try:
+        config = LLMConfig.from_values(
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            temperature=temperature,
+            timeout=timeout,
+        )
+    except LLMConfigError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    llm_client = client or OpenAICompatibleClient(config)
+    return LLMPdfConverter(
+        llm_client,
+        chunk_pages=chunk_pages,
+        image_dpi=image_dpi,
+    )
 
 
 @app.command()
@@ -64,16 +129,55 @@ def extract(
     output: Optional[Path] = typer.Option(
         None, "-o", "--output", help="Output .tex file path (default: stdout)"
     ),
+    pages: Optional[str] = typer.Option(
+        None, "--pages", help="Page selection such as 1,3-5 (1-based)"
+    ),
+    model: Optional[str] = typer.Option(
+        None,
+        "--model",
+        envvar="LATEX_TOOLS_LLM_MODEL",
+        help="LLM model name",
+    ),
+    api_key: Optional[str] = typer.Option(
+        None,
+        "--api-key",
+        envvar="LATEX_TOOLS_LLM_API_KEY",
+        help="LLM API key",
+        hide_input=True,
+    ),
+    base_url: Optional[str] = typer.Option(
+        None,
+        "--base-url",
+        envvar="LATEX_TOOLS_LLM_BASE_URL",
+        help="OpenAI-compatible API base URL",
+    ),
+    temperature: float = typer.Option(
+        0.1, "--temperature", help="Sampling temperature"
+    ),
+    timeout: float = typer.Option(120.0, "--timeout", help="LLM request timeout"),
+    chunk_pages: int = typer.Option(
+        4, "--chunk-pages", help="Number of pages per LLM request"
+    ),
+    image_dpi: int = typer.Option(
+        160, "--image-dpi", help="Render DPI for page images"
+    ),
 ):
     """Extract content from a single PDF and convert to LaTeX."""
     pdf_path = _resolve_existing_path(pdf_path)
     if not pdf_path.is_file():
         raise typer.BadParameter(f"Not a file: {pdf_path}")
 
-    extractor = TextExtractor()
-    content = extractor.extract(pdf_path)
-    converter = LatexConverter()
-    latex = converter.convert(content)
+    converter = _build_converter(
+        model=model,
+        api_key=api_key,
+        base_url=base_url,
+        temperature=temperature,
+        timeout=timeout,
+        chunk_pages=chunk_pages,
+        image_dpi=image_dpi,
+    )
+    result = converter.convert(pdf_path, pages=_parse_pages(pages))
+    latex = result.latex
 
     if output:
         output = _resolve_tex_output(output)
@@ -82,6 +186,8 @@ def extract(
         typer.echo(f"Written to {output}", err=True)
     else:
         typer.echo(latex)
+    for note in result.notes:
+        typer.echo(f"Note: {note}", err=True)
 
 
 @app.command()
@@ -98,16 +204,56 @@ def batch(
     pattern: str = typer.Option(
         "*.pdf", "--pattern", help="Glob pattern for PDF files"
     ),
+    pages: Optional[str] = typer.Option(
+        None, "--pages", help="Page selection such as 1,3-5 (1-based)"
+    ),
+    model: Optional[str] = typer.Option(
+        None,
+        "--model",
+        envvar="LATEX_TOOLS_LLM_MODEL",
+        help="LLM model name",
+    ),
+    api_key: Optional[str] = typer.Option(
+        None,
+        "--api-key",
+        envvar="LATEX_TOOLS_LLM_API_KEY",
+        help="LLM API key",
+        hide_input=True,
+    ),
+    base_url: Optional[str] = typer.Option(
+        None,
+        "--base-url",
+        envvar="LATEX_TOOLS_LLM_BASE_URL",
+        help="OpenAI-compatible API base URL",
+    ),
+    temperature: float = typer.Option(
+        0.1, "--temperature", help="Sampling temperature"
+    ),
+    timeout: float = typer.Option(120.0, "--timeout", help="LLM request timeout"),
+    chunk_pages: int = typer.Option(
+        4, "--chunk-pages", help="Number of pages per LLM request"
+    ),
+    image_dpi: int = typer.Option(
+        160, "--image-dpi", help="Render DPI for page images"
+    ),
 ):
     """Extract all matching PDFs in a directory to individual .tex files."""
     directory = _resolve_existing_path(directory)
     if not directory.is_dir():
         raise typer.BadParameter(f"Not a directory: {directory}")
 
-    extractor = TextExtractor()
-    converter = LatexConverter()
+    converter = _build_converter(
+        model=model,
+        api_key=api_key,
+        base_url=base_url,
+        temperature=temperature,
+        timeout=timeout,
+        chunk_pages=chunk_pages,
+        image_dpi=image_dpi,
+    )
     output_dir = _resolve_output_dir(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    page_selection = _parse_pages(pages)
 
     pdf_files = sorted(Path(directory).glob(pattern))
     if not pdf_files:
@@ -116,10 +262,12 @@ def batch(
 
     for pdf in pdf_files:
         typer.echo(f"Processing: {pdf.name}", err=True)
-        content = extractor.extract(pdf)
-        latex = converter.convert(content)
+        result = converter.convert(pdf, pages=page_selection)
+        latex = result.latex
         tex_path = output_dir / f"{pdf.stem}.tex"
         tex_path.write_text(latex, encoding="utf-8")
+        for note in result.notes:
+            typer.echo(f"{pdf.name}: {note}", err=True)
 
     typer.echo(f"Done. {len(pdf_files)} files written to {output_dir}", err=True)
 

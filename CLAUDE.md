@@ -69,12 +69,18 @@ uv run latex-tools batch docs/ -o src/
 - `extract -o` 的相对路径按仓库根目录解析；只给文件名时默认写入 `src/`。
 - `batch docs/ -o src/` 会把 `docs/` 下的 PDF 转成同名 `.tex` 并写入 `src/`。
 
-转换器当前会：
+转换流程当前会：
 
-- 使用 `ctexart`。
-- 添加 `amsthm` 与 `amssymb`。
-- 过滤 PDF 文本层里的控制字符。
-- 对一批常见 Unicode 数学符号做 LaTeX 宏替换。
+- 先用 `pymupdf` 提取页级文本、位置、字号，并渲染页面图像。
+- 把这些上下文发送给 OpenAI-compatible API，由 LLM 重建 LaTeX 正文片段。
+- 由本地代码固定 `ctexart`、`amsmath`、`amsthm`、`amssymb` 的文档外壳。
+- 仍保留文本层识别结果作为 LLM 辅助信息。
+
+使用前需要配置：
+
+- `LATEX_TOOLS_LLM_MODEL`
+- `LATEX_TOOLS_LLM_API_KEY`
+- 可选 `LATEX_TOOLS_LLM_BASE_URL`
 
 ## 验证命令
 
@@ -84,7 +90,7 @@ uv run latex-tools batch docs/ -o src/
 perl -c .latexmkrc
 bash -n scripts/post-build.sh
 python3 -m json.tool LaTeX.code-workspace
-python3 -m py_compile src/latex_tools/cli.py src/latex_tools/convert/latex_converter.py src/latex_tools/extract/text_extractor.py
+python3 -m py_compile src/latex_tools/cli.py src/latex_tools/convert/latex_converter.py src/latex_tools/extract/base.py src/latex_tools/extract/text_extractor.py src/latex_tools/llm/config.py src/latex_tools/llm/client.py src/latex_tools/llm/pipeline.py src/latex_tools/llm/prompts.py
 latexmk src/test.tex
 ```
 

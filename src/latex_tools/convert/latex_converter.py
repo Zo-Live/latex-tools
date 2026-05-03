@@ -1,8 +1,10 @@
 """Convert extracted content to LaTeX document source."""
 
+import re
+
 from typing import List
 
-from ..extract.base import ContentBlock, ExtractedContent
+from ..extract.base import ExtractedContent
 
 
 class LatexConverter:
@@ -16,6 +18,7 @@ class LatexConverter:
         lines.append("% !TEX program = xelatex")
         docclass = r"\documentclass[UTF8]{ctexart}" if self.use_ctex else r"\documentclass{article}"
         lines.append(docclass)
+        lines.append(r"\usepackage{amsmath}")
         lines.append(r"\usepackage{amsthm}")
         lines.append(r"\usepackage{amssymb}")
         lines.append(r"\newtheorem{definition}{定义}")
@@ -80,6 +83,64 @@ class LatexConverter:
         lines.append(r"\end{document}")
         lines.append("")
         return "\n".join(lines)
+
+    def convert_fragments(
+        self,
+        *,
+        title: str,
+        fragments: List[str],
+        notes: List[str] | None = None,
+    ) -> str:
+        """Build a complete LaTeX document from trusted body fragments."""
+        lines = self._document_header(title)
+        for note in notes or []:
+            sanitized_note = note.replace("\n", " ").strip()
+            if sanitized_note:
+                lines.append("% LLM note: " + sanitized_note)
+        if notes:
+            lines.append("")
+
+        for fragment in fragments:
+            cleaned = self._clean_body_fragment(fragment)
+            if not cleaned:
+                continue
+            lines.append(cleaned)
+            lines.append("")
+
+        lines.append(r"\end{document}")
+        lines.append("")
+        return "\n".join(lines)
+
+    def _document_header(self, title: str) -> List[str]:
+        docclass = r"\documentclass[UTF8]{ctexart}" if self.use_ctex else r"\documentclass{article}"
+        return [
+            "% !TEX program = xelatex",
+            docclass,
+            r"\usepackage{amsmath}",
+            r"\usepackage{amsthm}",
+            r"\usepackage{amssymb}",
+            r"\newtheorem{definition}{定义}",
+            r"\newtheorem{theorem}{定理}",
+            r"\newtheorem{lemma}{引理}",
+            r"\newtheorem{property}{性质}",
+            r"\newtheorem{corollary}{推论}",
+            r"\newtheorem{example}{例}",
+            "",
+            r"\title{" + self._escape_latex(title) + "}",
+            r"\date{\today}",
+            "",
+            r"\begin{document}",
+            r"\maketitle",
+            "",
+        ]
+
+    def _clean_body_fragment(self, fragment: str) -> str:
+        text = fragment.strip()
+        text = re.sub(r"\\documentclass(?:\[[^\]]*\])?\{[^}]+\}", "", text)
+        text = re.sub(r"\\usepackage(?:\[[^\]]*\])?\{[^}]+\}", "", text)
+        text = text.replace(r"\begin{document}", "")
+        text = text.replace(r"\end{document}", "")
+        return text.strip()
 
     def _escape_latex(self, text: str) -> str:
         text = self._strip_invalid_chars(text)
