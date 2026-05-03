@@ -64,29 +64,34 @@ class LLMPdfConverter:
         *,
         pages: Sequence[int] | None = None,
     ) -> LLMConversionResult:
-        context = self.extractor.extract_context(
+        fragments: list[str] = []
+        notes: list[str] = []
+        previous_latex_tail = ""
+        document_title = pdf_path.stem
+        saw_chunk = False
+
+        for chunk in self.extractor.iter_context_chunks(
             pdf_path,
             pages=pages,
             image_dpi=self.image_dpi,
             include_images=True,
-        )
-        if not context.pages:
-            raise ValueError("No pages were selected for conversion.")
+            chunk_size=self.chunk_pages,
+        ):
+            if not saw_chunk:
+                document_title = chunk.title
+            saw_chunk = True
+            try:
+                result = self.client.generate_latex_chunk(
+                    document_title=chunk.title,
+                    pages=chunk.pages,
+                    chunk_index=chunk.chunk_index,
+                    total_chunks=chunk.total_chunks,
+                    previous_latex_tail=previous_latex_tail,
+                    extra_prompt=self.extra_prompt,
+                )
+            finally:
+                _release_page_images(chunk.pages)
 
-        chunks = list(_chunk_pages(context.pages, self.chunk_pages))
-        fragments: list[str] = []
-        notes: list[str] = []
-        previous_latex_tail = ""
-
-        for index, page_chunk in enumerate(chunks, start=1):
-            result = self.client.generate_latex_chunk(
-                document_title=context.title,
-                pages=page_chunk,
-                chunk_index=index,
-                total_chunks=len(chunks),
-                previous_latex_tail=previous_latex_tail,
-                extra_prompt=self.extra_prompt,
-            )
             previous_latex_tail = _append_tail(
                 previous_latex_tail,
                 result.latex,
@@ -95,9 +100,12 @@ class LLMPdfConverter:
             fragments.append(result.latex)
             notes.extend(result.notes)
 
+        if not saw_chunk:
+            raise ValueError("No pages were selected for conversion.")
+
         return LLMConversionResult(
             latex=self.document_builder.convert_fragments(
-                title=context.title,
+                title=document_title,
                 fragments=fragments,
                 notes=notes,
             ),
@@ -128,3 +136,8 @@ def _append_tail(
     if not has_previous_fragment:
         return _tail(fragment, max_chars)
     return _tail(previous_tail + "\n\n" + fragment, max_chars)
+
+
+def _release_page_images(pages: Sequence[PdfPageContext]) -> None:
+    for page in pages:
+        page.image_base64 = None

@@ -11,6 +11,7 @@ from .base import (
     BaseExtractor,
     ContentBlock,
     ExtractedContent,
+    PdfDocumentChunk,
     PageTextBlock,
     PdfDocumentContext,
     PdfPageContext,
@@ -57,35 +58,104 @@ class TextExtractor(BaseExtractor):
         Page numbers are 1-based. If ``pages`` is not provided, every PDF page is
         extracted.
         """
-        doc = pymupdf.open(pdf_path)
-        wanted_pages = set(pages) if pages is not None else None
         page_contexts: List[PdfPageContext] = []
-
-        for page in doc:
-            page_number = page.number + 1
-            if wanted_pages is not None and page_number not in wanted_pages:
-                continue
-
-            image_base64 = None
-            if include_images:
-                image_base64 = self._render_page_base64(page, image_dpi)
-
-            rect = page.rect
-            page_contexts.append(
-                PdfPageContext(
-                    page_number=page_number,
-                    width=rect.width,
-                    height=rect.height,
-                    text_blocks=self._extract_page_text_blocks(page),
-                    image_base64=image_base64,
-                )
-            )
-
-        doc.close()
+        for chunk in self.iter_context_chunks(
+            pdf_path,
+            pages=pages,
+            image_dpi=image_dpi,
+            include_images=include_images,
+            chunk_size=1,
+        ):
+            page_contexts.extend(chunk.pages)
         return PdfDocumentContext(
             source_file=pdf_path,
             title=pdf_path.stem,
             pages=page_contexts,
+        )
+
+    def iter_context_chunks(
+        self,
+        pdf_path: Path,
+        *,
+        pages: Optional[Sequence[int]] = None,
+        image_dpi: int = 160,
+        include_images: bool = True,
+        chunk_size: int = 4,
+    ) -> Iterable[PdfDocumentChunk]:
+        """Yield page-level context in chunks for the LLM conversion pipeline."""
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be positive.")
+
+        doc = pymupdf.open(pdf_path)
+        try:
+            page_numbers = self._selected_page_numbers(doc.page_count, pages)
+            total_chunks = (len(page_numbers) + chunk_size - 1) // chunk_size
+            chunk_pages: List[PdfPageContext] = []
+            chunk_index = 0
+
+            for page_number in page_numbers:
+                page = doc[page_number - 1]
+                chunk_pages.append(
+                    self._extract_page_context(
+                        page,
+                        image_dpi=image_dpi,
+                        include_images=include_images,
+                    )
+                )
+
+                if len(chunk_pages) == chunk_size:
+                    chunk_index += 1
+                    yield PdfDocumentChunk(
+                        source_file=pdf_path,
+                        title=pdf_path.stem,
+                        chunk_index=chunk_index,
+                        total_chunks=total_chunks,
+                        pages=chunk_pages,
+                    )
+                    chunk_pages = []
+
+            if chunk_pages:
+                chunk_index += 1
+                yield PdfDocumentChunk(
+                    source_file=pdf_path,
+                    title=pdf_path.stem,
+                    chunk_index=chunk_index,
+                    total_chunks=total_chunks,
+                    pages=chunk_pages,
+                )
+        finally:
+            doc.close()
+
+    def _selected_page_numbers(
+        self,
+        page_count: int,
+        pages: Optional[Sequence[int]],
+    ) -> List[int]:
+        wanted_pages = set(pages) if pages is not None else None
+        return [
+            page_number
+            for page_number in range(1, page_count + 1)
+            if wanted_pages is None or page_number in wanted_pages
+        ]
+
+    def _extract_page_context(
+        self,
+        page: pymupdf.Page,
+        *,
+        image_dpi: int,
+        include_images: bool,
+    ) -> PdfPageContext:
+        image_base64 = None
+        if include_images:
+            image_base64 = self._render_page_base64(page, image_dpi)
+
+        rect = page.rect
+        return PdfPageContext(
+            page_number=page.number + 1,
+            width=rect.width,
+            height=rect.height,
+            text_blocks=self._extract_page_text_blocks(page),
+            image_base64=image_base64,
         )
 
     def _extract_page_text_blocks(self, page: pymupdf.Page) -> List[PageTextBlock]:

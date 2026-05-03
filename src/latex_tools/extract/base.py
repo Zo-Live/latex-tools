@@ -62,6 +62,17 @@ class PdfDocumentContext:
     pages: List[PdfPageContext] = field(default_factory=list)
 
 
+@dataclass
+class PdfDocumentChunk:
+    """A chunk of page-level PDF context for one LLM request."""
+
+    source_file: Path
+    title: str
+    chunk_index: int
+    total_chunks: int
+    pages: List[PdfPageContext] = field(default_factory=list)
+
+
 class BaseExtractor(ABC):
     """Abstract base for all PDF extractors.
 
