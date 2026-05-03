@@ -373,3 +373,4 @@ src/*.tex
 .agents
 AGENTS.md
 CLAUDE.md
+LaTeX.code-workspace
