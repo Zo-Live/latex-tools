@@ -16,7 +16,7 @@ class LLMConfig:
     model: str
     api_key: str
     base_url: Optional[str] = None
-    temperature: float = 0.1
+    temperature: float = 1.0
     timeout: float = 120.0
 
     @classmethod
@@ -26,7 +26,7 @@ class LLMConfig:
         model: Optional[str] = None,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
-        temperature: float = 0.1,
+        temperature: float = 1.0,
         timeout: float = 120.0,
     ) -> "LLMConfig":
         resolved_model = model or os.environ.get("LATEX_TOOLS_LLM_MODEL")

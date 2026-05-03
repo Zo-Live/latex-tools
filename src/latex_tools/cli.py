@@ -152,7 +152,7 @@ def extract(
         help="OpenAI-compatible API base URL",
     ),
     temperature: float = typer.Option(
-        0.1, "--temperature", help="Sampling temperature"
+        1.0, "--temperature", help="Sampling temperature"
     ),
     timeout: float = typer.Option(120.0, "--timeout", help="LLM request timeout"),
     chunk_pages: int = typer.Option(
@@ -227,7 +227,7 @@ def batch(
         help="OpenAI-compatible API base URL",
     ),
     temperature: float = typer.Option(
-        0.1, "--temperature", help="Sampling temperature"
+        1.0, "--temperature", help="Sampling temperature"
     ),
     timeout: float = typer.Option(120.0, "--timeout", help="LLM request timeout"),
     chunk_pages: int = typer.Option(

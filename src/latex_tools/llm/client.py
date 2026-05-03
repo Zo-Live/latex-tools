@@ -64,18 +64,33 @@ class OpenAICompatibleClient:
             "temperature": self.config.temperature,
         }
         try:
-            response = self._client.chat.completions.create(
-                **request_kwargs,
-                response_format={"type": "json_object"},
-            )
+            response = self._create_completion(request_kwargs, response_format=True)
         except Exception as exc:  # pragma: no cover - backend specific fallback
-            if "response_format" not in str(exc):
+            if _is_temperature_one_error(exc):
+                request_kwargs["temperature"] = 1.0
+                response = self._create_completion(
+                    request_kwargs,
+                    response_format=True,
+                )
+            elif "response_format" not in str(exc):
                 raise
-            response = self._client.chat.completions.create(**request_kwargs)
+            else:
+                response = self._create_completion(
+                    request_kwargs,
+                    response_format=False,
+                )
         content = response.choices[0].message.content
         if not isinstance(content, str):
             raise LLMResponseError("LLM response content is empty or not text.")
         return parse_chunk_response(content)
+
+    def _create_completion(self, request_kwargs: dict[str, Any], *, response_format: bool):
+        if response_format:
+            return self._client.chat.completions.create(
+                **request_kwargs,
+                response_format={"type": "json_object"},
+            )
+        return self._client.chat.completions.create(**request_kwargs)
 
 
 def parse_chunk_response(raw_content: str) -> LLMChunkResult:
@@ -183,3 +198,8 @@ def _latex_has_json_escape_damage(value: Any) -> bool:
     if not isinstance(value, str):
         return False
     return any(char in value for char in ("\b", "\f", "\r"))
+
+
+def _is_temperature_one_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "temperature" in message and "only 1" in message
