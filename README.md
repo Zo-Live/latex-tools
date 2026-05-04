@@ -102,41 +102,41 @@ uv run latex-tools batch docs/ -o src/
 ```text
 .
 ├─ .gitignore
-├─ .latexmkrc                     LaTeX 编译配置
-├─ .python-version                Python 版本声明
-├─ pyproject.toml                 Python 项目配置与依赖
-├─ uv.lock                        uv 锁定文件
+├─ .latexmkrc                     # LaTeX 编译配置
+├─ .python-version                # Python 版本声明
+├─ pyproject.toml                 # Python 项目配置与依赖
+├─ uv.lock                        # uv 锁定文件
 ├─ scripts/
-│  └─ post-build.sh               构建产物归位脚本
+│  └─ post-build.sh               # 构建产物归位脚本
 ├─ src/
-│  ├─ .latexmkrc                  自动加载根目录 .latexmkrc
-│  └─ latex_tools/                Python 包：LLM 辅助 PDF 转 LaTeX
+│  ├─ .latexmkrc                  # 自动加载根目录 .latexmkrc
+│  └─ latex_tools/                # Python 包：LLM 辅助 PDF 转 LaTeX
 │     ├─ __init__.py
-│     ├─ cli.py                   命令行入口（latex-tools）
+│     ├─ cli.py                   # 命令行入口（latex-tools）
 │     ├─ convert/
 │     │  ├─ __init__.py
-│     │  └─ latex_converter.py    LaTeX 文档外壳组装与输出
+│     │  └─ latex_converter.py    # LaTeX 文档外壳组装与输出
 │     ├─ extract/
 │     │  ├─ __init__.py
-│     │  ├─ base.py               PDF 页级信息提取基类
-│     │  └─ text_extractor.py     文本、位置、字号与图像提取
+│     │  ├─ base.py               # PDF 页级信息提取基类
+│     │  └─ text_extractor.py     # 文本、位置、字号与图像提取
 │     └─ llm/
 │        ├─ __init__.py
-│        ├─ cache.py              断点续传缓存
-│        ├─ client.py             OpenAI-compatible API 客户端
-│        ├─ config.py             LLM 模型与密钥配置
-│        ├─ pipeline.py           分 chunk 转换流水线
-│        └─ prompts.py            系统提示词模板
-├─ tests/                         单元测试
+│        ├─ cache.py              # 断点续传缓存
+│        ├─ client.py             # OpenAI-compatible API 客户端
+│        ├─ config.py             # LLM 模型与密钥配置
+│        ├─ pipeline.py           # 分 chunk 转换流水线
+│        └─ prompts.py            # 系统提示词模板
+├─ tests/                         # 单元测试
 │  ├─ conftest.py
 │  ├─ test_cli_helpers.py
 │  ├─ test_latex_converter.py
 │  ├─ test_llm_client.py
 │  ├─ test_llm_pipeline.py
 │  └─ test_text_extractor.py
-├─ docs/                          原始 PDF（git 忽略）
-├─ out/                           编译后的 PDF 输出（git 忽略）
-└─ build/                         LaTeX 构建产物（git 忽略）
+├─ docs/                          # 原始 PDF（git 忽略）
+├─ out/                           # 编译后的 PDF 输出（git 忽略）
+└─ build/                         # LaTeX 构建产物（git 忽略）
 ```
 
 ## 开发
