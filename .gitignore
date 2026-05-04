@@ -349,8 +349,8 @@ $RECYCLE.BIN/
 # End of https://www.gitignore.io/api/tex,linux,macos,windows
 
 ### Project build output directories ###
-/out/
-/build/
+out/*
+build/*
 
 ### Python ###
 __pycache__/
@@ -365,8 +365,8 @@ dist/
 ### Pytest ###
 .pytest_cache
 
-### Project ###
-docs/
+### Project State ###
+docs/*
 src/*.tex
 .codex
 .claude
@@ -374,3 +374,7 @@ src/*.tex
 AGENTS.md
 CLAUDE.md
 LaTeX.code-workspace
+.vscode
+!docs/.gitkeep
+!build/.gitkeep
+!out/.gitkeep

@@ -134,9 +134,9 @@ uv run latex-tools batch docs/ -o src/
 │  ├─ test_llm_client.py
 │  ├─ test_llm_pipeline.py
 │  └─ test_text_extractor.py
-├─ docs/                          # 原始 PDF（git 忽略）
-├─ out/                           # 编译后的 PDF 输出（git 忽略）
-└─ build/                         # LaTeX 构建产物（git 忽略）
+├─ docs/                          # 原始 PDF
+├─ out/                           # 编译后的 PDF 输出
+└─ build/                         # LaTeX 构建产物
 ```
 
 ## 开发
