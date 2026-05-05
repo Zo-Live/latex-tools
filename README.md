@@ -98,7 +98,7 @@ uv run latex-tools batch docs/ -o src/
 
 断点续传缓存默认启用。相同 PDF、页码和转换参数重跑时会复用已完成 chunk；中途失败后再次运行可从已完成 chunk 继续。
 
-等待未命中缓存的 LLM chunk 时，交互式终端会在 stderr 显示 `-`、`/`、`|` 和反斜杠轮转的加载提示。stdout 仍只输出 LaTeX，便于继续重定向到 `.tex` 文件。
+等待未命中缓存的 LLM chunk 时，交互式终端会在 stderr 显示 `-`、`/`、`|` 和 `\` 轮转的加载提示。stdout 仍只输出 LaTeX，便于继续重定向到 `.tex` 文件。
 
 ## 项目结构
 
