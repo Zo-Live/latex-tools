@@ -5,9 +5,10 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
+import click
 import typer
 
-from .extract.base import ImageRenderOptions
+from .extract.base import DocumentExtractionError, ImageRenderOptions
 from .llm.cache import ChunkCacheOptions
 from .llm.client import OpenAICompatibleClient
 from .llm.config import LLMConfig, LLMConfigError
@@ -206,6 +207,19 @@ def _load_cli_prompt_preset(name: str) -> PromptPreset:
         return load_prompt_preset(name, repo_root=_repo_root())
     except PromptPresetError as exc:
         raise typer.BadParameter(str(exc)) from exc
+
+
+def _format_conversion_failure(path: Path, exc: Exception) -> str:
+    return f"Failed to convert {path.name}: {_describe_cli_error(exc)}"
+
+
+def _describe_cli_error(exc: Exception) -> str:
+    message = str(exc).strip()
+    if isinstance(exc, DocumentExtractionError):
+        return message or "document extraction failed"
+    if isinstance(exc, OSError):
+        return message or exc.__class__.__name__
+    return message or exc.__class__.__name__
 
 
 @presets_app.command("list")
@@ -432,6 +446,7 @@ def extract(
     if not pdf_path.is_file():
         raise typer.BadParameter(f"Not a file: {pdf_path}")
 
+    page_selection = _parse_pages(pages)
     converter = _build_converter(
         model=model,
         api_key=api_key,
@@ -455,18 +470,21 @@ def extract(
         manual_title=title,
         show_date=show_date,
     )
-    result = converter.convert(pdf_path, pages=_parse_pages(pages))
-    latex = result.latex
+    try:
+        result = converter.convert(pdf_path, pages=page_selection)
+        latex = result.latex
 
-    if output:
-        output = _resolve_tex_output(output)
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(latex, encoding="utf-8")
-        typer.echo(f"Written to {output}", err=True)
-    else:
-        typer.echo(latex)
-    for note in result.notes:
-        typer.echo(f"Note: {note}", err=True)
+        if output:
+            output = _resolve_tex_output(output)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(latex, encoding="utf-8")
+            typer.echo(f"Written to {output}", err=True)
+        else:
+            typer.echo(latex)
+        for note in result.notes:
+            typer.echo(f"Note: {note}", err=True)
+    except Exception as exc:
+        raise click.ClickException(_format_conversion_failure(pdf_path, exc)) from exc
 
 
 @app.command()
@@ -602,24 +620,50 @@ def batch(
         show_date=show_date,
     )
     output_dir = _resolve_output_dir(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
     page_selection = _parse_pages(pages)
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise click.ClickException(
+            f"Cannot create output directory {output_dir}: {_describe_cli_error(exc)}"
+        ) from exc
 
     pdf_files = sorted(Path(directory).glob(pattern))
     if not pdf_files:
-        typer.echo(f"No PDFs found matching '{pattern}' in {directory}", err=True)
+        typer.echo(f"No files found matching '{pattern}' in {directory}", err=True)
         raise typer.Exit(1)
 
+    failures: list[tuple[Path, str]] = []
+    written_count = 0
     for pdf in pdf_files:
         typer.echo(f"Processing: {pdf.name}", err=True)
-        result = converter.convert(pdf, pages=page_selection)
-        latex = result.latex
-        tex_path = output_dir / f"{pdf.stem}.tex"
-        tex_path.write_text(latex, encoding="utf-8")
+        try:
+            result = converter.convert(pdf, pages=page_selection)
+            latex = result.latex
+            tex_path = output_dir / f"{pdf.stem}.tex"
+            tex_path.write_text(latex, encoding="utf-8")
+        except Exception as exc:
+            reason = _describe_cli_error(exc)
+            failures.append((pdf, reason))
+            typer.echo(f"Failed: {pdf.name}: {reason}", err=True)
+            continue
+
+        written_count += 1
         for note in result.notes:
             typer.echo(f"{pdf.name}: {note}", err=True)
 
-    typer.echo(f"Done. {len(pdf_files)} files written to {output_dir}", err=True)
+    if failures:
+        typer.echo(
+            f"Done with failures. {written_count} files written to {output_dir}; "
+            f"{len(failures)} failed.",
+            err=True,
+        )
+        typer.echo("Failures:", err=True)
+        for failed_file, reason in failures:
+            typer.echo(f"- {failed_file.name}: {reason}", err=True)
+        raise typer.Exit(1)
+
+    typer.echo(f"Done. {written_count} files written to {output_dir}", err=True)
 
 
 if __name__ == "__main__":

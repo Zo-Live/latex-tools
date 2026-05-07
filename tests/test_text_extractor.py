@@ -4,8 +4,13 @@ from pathlib import Path
 import base64
 
 import pymupdf
+import pytest
 
-from latex_tools.extract.base import ImageRenderOptions, PageTextBlock
+from latex_tools.extract.base import (
+    DocumentExtractionError,
+    ImageRenderOptions,
+    PageTextBlock,
+)
 from latex_tools.extract.text_extractor import TextExtractor
 
 
@@ -17,6 +22,56 @@ def _write_blank_pdf(path: Path, page_count: int) -> None:
         doc.save(path)
     finally:
         doc.close()
+
+
+def _write_encrypted_pdf(path: Path) -> None:
+    doc = pymupdf.open()
+    try:
+        doc.new_page()
+        doc.save(
+            path,
+            encryption=pymupdf.PDF_ENCRYPT_AES_256,
+            owner_pw="owner",
+            user_pw="user",
+            permissions=0,
+        )
+    finally:
+        doc.close()
+
+
+def test_extract_context_wraps_empty_file_errors(tmp_path):
+    empty_path = tmp_path / "empty.pdf"
+    empty_path.write_bytes(b"")
+
+    with pytest.raises(DocumentExtractionError, match="empty file"):
+        TextExtractor().extract_context(empty_path)
+
+
+def test_extract_context_wraps_damaged_file_errors(tmp_path):
+    damaged_path = tmp_path / "damaged.pdf"
+    damaged_path.write_bytes(b"not a pdf")
+
+    with pytest.raises(DocumentExtractionError, match="unsupported or damaged"):
+        TextExtractor().extract_context(damaged_path)
+
+
+def test_extract_context_wraps_encrypted_file_errors(tmp_path):
+    locked_path = tmp_path / "locked.pdf"
+    _write_encrypted_pdf(locked_path)
+
+    with pytest.raises(DocumentExtractionError, match="encrypted"):
+        TextExtractor().extract_context(locked_path)
+
+
+def test_extract_context_allows_pymupdf_supported_non_pdf_files(tmp_path):
+    text_path = tmp_path / "notes.txt"
+    text_path.write_text("hello", encoding="utf-8")
+
+    context = TextExtractor().extract_context(text_path, include_images=False)
+
+    assert context.title == "notes"
+    assert [page.page_number for page in context.pages] == [1]
+    assert context.pages[0].image_base64 is None
 
 
 def test_iter_context_chunks_renders_only_selected_pages(tmp_path, monkeypatch):

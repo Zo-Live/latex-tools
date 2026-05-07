@@ -6,6 +6,29 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 
+class DocumentExtractionError(RuntimeError):
+    """Base error for document extraction failures."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        source_file: Path | None = None,
+        page_number: int | None = None,
+    ):
+        super().__init__(message)
+        self.source_file = source_file
+        self.page_number = page_number
+
+
+class DocumentOpenError(DocumentExtractionError):
+    """Raised when an input document cannot be opened or initialized."""
+
+
+class DocumentReadError(DocumentExtractionError):
+    """Raised when an opened document cannot be read or rendered."""
+
+
 @dataclass
 class ContentBlock:
     """A single block of extracted content."""

@@ -10,12 +10,26 @@ import pymupdf
 from .base import (
     BaseExtractor,
     ContentBlock,
+    DocumentExtractionError,
+    DocumentOpenError,
+    DocumentReadError,
     ExtractedContent,
     ImageRenderOptions,
     PdfDocumentChunk,
     PageTextBlock,
     PdfDocumentContext,
     PdfPageContext,
+)
+
+
+_PYMUPDF_OPEN_ERRORS = tuple(
+    exc_type
+    for exc_type in (
+        getattr(pymupdf, "EmptyFileError", None),
+        getattr(pymupdf, "FileDataError", None),
+        getattr(pymupdf, "FileNotFoundError", None),
+    )
+    if isinstance(exc_type, type)
 )
 
 
@@ -27,24 +41,30 @@ class TextExtractor(BaseExtractor):
     """
 
     def extract(self, pdf_path: Path) -> ExtractedContent:
-        doc = pymupdf.open(pdf_path)
         title = pdf_path.stem
         blocks: List[ContentBlock] = []
+        doc = self._open_document(pdf_path)
 
-        for page in doc:
-            for text_block in self._extract_page_text_blocks(page):
-                blocks.append(
-                    ContentBlock(
-                        text=text_block.text,
-                        block_type=text_block.block_type,
-                        level=1 if text_block.block_type == "heading" else 0,
-                        page_number=page.number + 1,
-                        bbox=text_block.bbox,
-                        font_size=text_block.font_size,
+        try:
+            for page_number in range(1, self._page_count(doc, pdf_path) + 1):
+                page = self._load_page(doc, pdf_path, page_number)
+                for text_block in self._read_page_text_blocks(
+                    page,
+                    pdf_path=pdf_path,
+                    page_number=page_number,
+                ):
+                    blocks.append(
+                        ContentBlock(
+                            text=text_block.text,
+                            block_type=text_block.block_type,
+                            level=1 if text_block.block_type == "heading" else 0,
+                            page_number=page_number,
+                            bbox=text_block.bbox,
+                            font_size=text_block.font_size,
+                        )
                     )
-                )
-
-        doc.close()
+        finally:
+            doc.close()
         return ExtractedContent(source_file=pdf_path, title=title, blocks=blocks)
 
     def extract_context(
@@ -91,18 +111,23 @@ class TextExtractor(BaseExtractor):
             raise ValueError("chunk_size must be positive.")
         resolved_image_options = self._resolve_image_options(image_dpi, image_options)
 
-        doc = pymupdf.open(pdf_path)
+        doc = self._open_document(pdf_path)
         try:
-            page_numbers = self._selected_page_numbers(doc.page_count, pages)
+            page_numbers = self._selected_page_numbers(
+                self._page_count(doc, pdf_path),
+                pages,
+            )
             total_chunks = (len(page_numbers) + chunk_size - 1) // chunk_size
             chunk_pages: List[PdfPageContext] = []
             chunk_index = 0
 
             for page_number in page_numbers:
-                page = doc[page_number - 1]
+                page = self._load_page(doc, pdf_path, page_number)
                 chunk_pages.append(
                     self._extract_page_context(
                         page,
+                        pdf_path=pdf_path,
+                        page_number=page_number,
                         image_options=resolved_image_options,
                         include_images=include_images,
                     )
@@ -147,30 +172,132 @@ class TextExtractor(BaseExtractor):
         self,
         page: pymupdf.Page,
         *,
+        pdf_path: Path,
+        page_number: int,
         image_options: ImageRenderOptions,
         include_images: bool,
     ) -> PdfPageContext:
         image_base64 = None
         image_mime_type = "image/png"
         if include_images:
-            render_dpi, image_format = self._resolve_image_render(page, image_options)
-            image_base64 = self._render_page_base64(
-                page,
-                render_dpi,
-                image_format=image_format,
-                jpeg_quality=image_options.jpeg_quality,
-            )
+            try:
+                render_dpi, image_format = self._resolve_image_render(
+                    page,
+                    image_options,
+                )
+                image_base64 = self._render_page_base64(
+                    page,
+                    render_dpi,
+                    image_format=image_format,
+                    jpeg_quality=image_options.jpeg_quality,
+                )
+            except DocumentExtractionError:
+                raise
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise DocumentReadError(
+                    f"Cannot render page {page_number}: {_describe_pymupdf_error(exc)}",
+                    source_file=pdf_path,
+                    page_number=page_number,
+                ) from exc
             image_mime_type = self._image_mime_type(image_format)
 
-        rect = page.rect
+        try:
+            rect = page.rect
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise DocumentReadError(
+                f"Cannot read page {page_number}: {_describe_pymupdf_error(exc)}",
+                source_file=pdf_path,
+                page_number=page_number,
+            ) from exc
         return PdfPageContext(
-            page_number=page.number + 1,
+            page_number=page_number,
             width=rect.width,
             height=rect.height,
-            text_blocks=self._extract_page_text_blocks(page),
+            text_blocks=self._read_page_text_blocks(
+                page,
+                pdf_path=pdf_path,
+                page_number=page_number,
+            ),
             image_base64=image_base64,
             image_mime_type=image_mime_type,
         )
+
+    def _open_document(self, pdf_path: Path) -> pymupdf.Document:
+        try:
+            doc = pymupdf.open(pdf_path)
+        except _PYMUPDF_OPEN_ERRORS as exc:
+            raise DocumentOpenError(
+                f"Cannot open document: {_describe_pymupdf_error(exc)}",
+                source_file=pdf_path,
+            ) from exc
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise DocumentOpenError(
+                f"Cannot open document: {_describe_pymupdf_error(exc)}",
+                source_file=pdf_path,
+            ) from exc
+
+        try:
+            needs_pass = getattr(doc, "needs_pass", False)
+            if callable(needs_pass):
+                needs_pass = needs_pass()
+            if needs_pass:
+                raise DocumentOpenError(
+                    "Cannot open document: encrypted document requires a password.",
+                    source_file=pdf_path,
+                )
+        except DocumentOpenError:
+            doc.close()
+            raise
+        except (OSError, RuntimeError, ValueError) as exc:
+            doc.close()
+            raise DocumentOpenError(
+                f"Cannot initialize document: {_describe_pymupdf_error(exc)}",
+                source_file=pdf_path,
+            ) from exc
+
+        return doc
+
+    def _page_count(self, doc: pymupdf.Document, pdf_path: Path) -> int:
+        try:
+            return int(doc.page_count)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise DocumentReadError(
+                f"Cannot read document page count: {_describe_pymupdf_error(exc)}",
+                source_file=pdf_path,
+            ) from exc
+
+    def _load_page(
+        self,
+        doc: pymupdf.Document,
+        pdf_path: Path,
+        page_number: int,
+    ) -> pymupdf.Page:
+        try:
+            return doc[page_number - 1]
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise DocumentReadError(
+                f"Cannot read page {page_number}: {_describe_pymupdf_error(exc)}",
+                source_file=pdf_path,
+                page_number=page_number,
+            ) from exc
+
+    def _read_page_text_blocks(
+        self,
+        page: pymupdf.Page,
+        *,
+        pdf_path: Path,
+        page_number: int,
+    ) -> List[PageTextBlock]:
+        try:
+            return self._extract_page_text_blocks(page)
+        except DocumentExtractionError:
+            raise
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise DocumentReadError(
+                f"Cannot read text on page {page_number}: {_describe_pymupdf_error(exc)}",
+                source_file=pdf_path,
+                page_number=page_number,
+            ) from exc
 
     def _resolve_image_options(
         self,
@@ -280,3 +407,21 @@ class TextExtractor(BaseExtractor):
             "引理": "lemma",
         }
         return mapping.get(keyword, "text")
+
+
+def _describe_pymupdf_error(exc: Exception) -> str:
+    if _is_instance(exc, "FileNotFoundError"):
+        return "file not found."
+    if _is_instance(exc, "EmptyFileError"):
+        return "empty file."
+    if _is_instance(exc, "FileDataError"):
+        return "unsupported or damaged document."
+    message = str(exc).strip()
+    if "encrypted" in message.lower():
+        return "encrypted document requires a password."
+    return message or exc.__class__.__name__
+
+
+def _is_instance(exc: Exception, class_name: str) -> bool:
+    exc_type = getattr(pymupdf, class_name, None)
+    return isinstance(exc_type, type) and isinstance(exc, exc_type)

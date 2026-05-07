@@ -1,11 +1,14 @@
 """Tests for CLI helper behavior."""
 
+from types import SimpleNamespace
+
 import pytest
 import typer
 from typer.testing import CliRunner
 
 from latex_tools import cli as cli_module
 from latex_tools.cli import TitleSource, _build_converter, _parse_pages, app
+from latex_tools.extract.base import DocumentExtractionError
 from latex_tools.llm.presets import PromptPreset, default_prompt_preset
 
 
@@ -355,3 +358,56 @@ def test_presets_cli_adds_and_shows_repository_preset(tmp_path, monkeypatch):
     assert "只保留证明" in show_result.output
     assert "标题短一些" in show_result.output
     assert "默认额外" in show_result.output
+
+
+def test_extract_cli_reports_conversion_failure_without_traceback(tmp_path, monkeypatch):
+    source = tmp_path / "bad.pdf"
+    source.write_bytes(b"not a pdf")
+
+    class FailingConverter:
+        def convert(self, pdf_path, *, pages=None):
+            raise DocumentExtractionError(
+                "Cannot open document: unsupported or damaged document.",
+                source_file=pdf_path,
+            )
+
+    monkeypatch.setattr(cli_module, "_build_converter", lambda **kwargs: FailingConverter())
+
+    result = runner.invoke(app, ["extract", str(source)])
+
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    assert "bad.pdf" in result.output
+    assert "unsupported or damaged" in result.output
+
+
+def test_batch_cli_skips_failed_files_and_summarizes(tmp_path, monkeypatch):
+    input_dir = tmp_path / "docs"
+    input_dir.mkdir()
+    bad_pdf = input_dir / "bad.pdf"
+    good_pdf = input_dir / "good.pdf"
+    bad_pdf.write_bytes(b"bad")
+    good_pdf.write_bytes(b"good")
+    output_dir = tmp_path / "out"
+
+    class BatchConverter:
+        def convert(self, pdf_path, *, pages=None):
+            if pdf_path.name == "bad.pdf":
+                raise RuntimeError("LLM failed")
+            return SimpleNamespace(latex=f"% converted {pdf_path.name}", notes=["note"])
+
+    monkeypatch.setattr(cli_module, "_build_converter", lambda **kwargs: BatchConverter())
+
+    result = runner.invoke(
+        app,
+        ["batch", str(input_dir), "-o", str(output_dir), "--pattern", "*.pdf"],
+    )
+
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    assert (output_dir / "good.tex").read_text(encoding="utf-8") == "% converted good.pdf"
+    assert not (output_dir / "bad.tex").exists()
+    assert "1 files written" in result.output
+    assert "1 failed" in result.output
+    assert "bad.pdf" in result.output
+    assert "LLM failed" in result.output
