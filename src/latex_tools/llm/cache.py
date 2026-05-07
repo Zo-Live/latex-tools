@@ -52,6 +52,7 @@ class ChunkCacheRun:
         extra_prompt: str,
     ):
         self.options = options
+        self.document_title = document_title
         self.run_key = _run_key(
             options=options,
             pdf_path=pdf_path,
@@ -118,7 +119,7 @@ class ChunkCacheRun:
             "schema_version": CACHE_SCHEMA_VERSION,
             "prompt_cache_version": PROMPT_CACHE_VERSION,
             "run_key": self.run_key,
-            "document_title": chunk.title,
+            "document_title": self.document_title,
             "chunk_index": chunk.chunk_index,
             "total_chunks": chunk.total_chunks,
             "page_numbers": _chunk_page_numbers(chunk),
@@ -169,7 +170,7 @@ class ChunkCacheRun:
             data.get("schema_version") == CACHE_SCHEMA_VERSION
             and data.get("prompt_cache_version") == PROMPT_CACHE_VERSION
             and data.get("run_key") == self.run_key
-            and data.get("document_title") == chunk.title
+            and data.get("document_title") == self.document_title
             and data.get("chunk_index") == chunk.chunk_index
             and data.get("total_chunks") == chunk.total_chunks
             and data.get("page_numbers") == _chunk_page_numbers(chunk)

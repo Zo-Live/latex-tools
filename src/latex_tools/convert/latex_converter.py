@@ -103,7 +103,7 @@ class LatexConverter:
     def __init__(self, use_ctex: bool = True):
         self.use_ctex = use_ctex
 
-    def convert(self, content: ExtractedContent) -> str:
+    def convert(self, content: ExtractedContent, *, show_date: bool = False) -> str:
         lines: List[str] = []
         lines.append("% !TEX program = xelatex")
         docclass = r"\documentclass[UTF8]{ctexart}" if self.use_ctex else r"\documentclass{article}"
@@ -119,7 +119,7 @@ class LatexConverter:
         lines.append(r"\newtheorem{example}{例}")
         lines.append("")
         lines.append(r"\title{" + self._escape_latex(content.title) + "}")
-        lines.append(r"\date{\today}")
+        lines.append(self._date_line(show_date))
         lines.append("")
         lines.append(r"\begin{document}")
         lines.append(r"\maketitle")
@@ -180,9 +180,10 @@ class LatexConverter:
         title: str,
         fragments: List[str],
         notes: List[str] | None = None,
+        show_date: bool = False,
     ) -> str:
         """Build a complete LaTeX document from trusted body fragments."""
-        lines = self._document_header(title)
+        lines = self._document_header(title, show_date=show_date)
         for note in notes or []:
             sanitized_note = note.replace("\n", " ").strip()
             if sanitized_note:
@@ -201,7 +202,7 @@ class LatexConverter:
         lines.append("")
         return "\n".join(lines)
 
-    def _document_header(self, title: str) -> List[str]:
+    def _document_header(self, title: str, *, show_date: bool = False) -> List[str]:
         docclass = r"\documentclass[UTF8]{ctexart}" if self.use_ctex else r"\documentclass{article}"
         return [
             "% !TEX program = xelatex",
@@ -217,12 +218,15 @@ class LatexConverter:
             r"\newtheorem{example}{例}",
             "",
             r"\title{" + self._escape_latex(title) + "}",
-            r"\date{\today}",
+            self._date_line(show_date),
             "",
             r"\begin{document}",
             r"\maketitle",
             "",
         ]
+
+    def _date_line(self, show_date: bool) -> str:
+        return r"\date{\today}" if show_date else r"\date{}"
 
     def _clean_body_fragment(self, fragment: str) -> str:
         text = fragment.strip()

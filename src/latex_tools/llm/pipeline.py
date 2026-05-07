@@ -1,5 +1,6 @@
 """LLM-driven PDF to LaTeX conversion pipeline."""
 
+import re
 import sys
 from collections import deque
 from contextlib import contextmanager
@@ -31,6 +32,15 @@ class LatexChunkClient(Protocol):
     ) -> LLMChunkResult:
         """Generate LaTeX for one page chunk."""
 
+    def generate_document_title(
+        self,
+        *,
+        fallback_title: str,
+        title_evidence: str,
+        extra_prompt: str = "",
+    ) -> str:
+        """Generate a document title from collected conversion evidence."""
+
 
 @dataclass
 class LLMConversionResult:
@@ -54,6 +64,9 @@ class LLMPdfConverter:
         prefetch_chunks: int = 1,
         cache_options: ChunkCacheOptions | None = None,
         extra_prompt: str = "",
+        title_source: str = "filename",
+        manual_title: str | None = None,
+        show_date: bool = False,
         progress_stream: TextIO | None = None,
         progress_interval: float = 0.1,
     ):
@@ -63,6 +76,16 @@ class LLMPdfConverter:
             raise ValueError("image_dpi must be positive.")
         if prefetch_chunks < 0:
             raise ValueError("prefetch_chunks must be non-negative.")
+        if title_source not in {"filename", "llm"}:
+            raise ValueError("title_source must be filename or llm.")
+
+        resolved_manual_title = None
+        if manual_title is not None:
+            resolved_manual_title = _normalize_title_text(manual_title)
+            if not resolved_manual_title:
+                raise ValueError("manual_title must not be empty.")
+        if resolved_manual_title is not None and title_source == "llm":
+            raise ValueError("manual_title cannot be used with title_source=llm.")
 
         self.client = client
         self.extractor = extractor or TextExtractor()
@@ -77,6 +100,9 @@ class LLMPdfConverter:
             cache_options if cache_options is not None and cache_options.enabled else None
         )
         self.extra_prompt = extra_prompt
+        self.title_source = title_source
+        self.manual_title = resolved_manual_title
+        self.show_date = show_date
         self.progress_spinner = _LlmWaitSpinner(progress_stream, progress_interval)
         self.document_builder = LatexConverter()
 
@@ -89,7 +115,9 @@ class LLMPdfConverter:
         fragments: list[str] = []
         notes: list[str] = []
         previous_latex_tail = ""
-        document_title = pdf_path.stem
+        fallback_title = pdf_path.stem
+        working_title = self.manual_title or fallback_title
+        title_evidence = _TitleEvidenceCollector(filename_title=fallback_title)
         saw_chunk = False
         cache_run: ChunkCacheRun | None = None
 
@@ -106,13 +134,17 @@ class LLMPdfConverter:
         try:
             for chunk in chunk_iterator:
                 if not saw_chunk:
-                    document_title = chunk.title
+                    fallback_title = chunk.title
+                    working_title = self.manual_title or fallback_title
+                    title_evidence = _TitleEvidenceCollector(
+                        filename_title=fallback_title,
+                    )
                     if self.cache_options is not None:
                         cache_run = ChunkCacheRun(
                             options=self.cache_options,
                             pdf_path=pdf_path,
                             pages=pages,
-                            document_title=chunk.title,
+                            document_title=working_title,
                             chunk_pages=self.chunk_pages,
                             image_dpi=self.image_dpi,
                             image_options=self.image_options,
@@ -132,7 +164,7 @@ class LLMPdfConverter:
                         )
                         with self.progress_spinner.spin(message):
                             result = self.client.generate_latex_chunk(
-                                document_title=chunk.title,
+                                document_title=working_title,
                                 pages=chunk.pages,
                                 chunk_index=chunk.chunk_index,
                                 total_chunks=chunk.total_chunks,
@@ -149,6 +181,7 @@ class LLMPdfConverter:
                     result.latex,
                     has_previous_fragment=bool(fragments),
                 )
+                title_evidence.add_chunk(chunk, result.latex)
                 fragments.append(result.latex)
                 notes.extend(result.notes)
         finally:
@@ -159,14 +192,44 @@ class LLMPdfConverter:
         if not saw_chunk:
             raise ValueError("No pages were selected for conversion.")
 
+        document_title = self._resolve_document_title(
+            fallback_title=fallback_title,
+            working_title=working_title,
+            title_evidence=title_evidence.build(),
+        )
         return LLMConversionResult(
             latex=self.document_builder.convert_fragments(
                 title=document_title,
                 fragments=fragments,
                 notes=notes,
+                show_date=self.show_date,
             ),
             notes=notes,
         )
+
+    def _resolve_document_title(
+        self,
+        *,
+        fallback_title: str,
+        working_title: str,
+        title_evidence: str,
+    ) -> str:
+        if self.manual_title is not None:
+            return self.manual_title
+        if self.title_source != "llm":
+            return working_title
+
+        try:
+            with self.progress_spinner.spin("Waiting for LLM title"):
+                title = self.client.generate_document_title(
+                    fallback_title=fallback_title,
+                    title_evidence=title_evidence,
+                    extra_prompt=self.extra_prompt,
+                )
+        except Exception:
+            return fallback_title
+
+        return _normalize_title_text(title) or fallback_title
 
 
 def _chunk_pages(
@@ -197,6 +260,71 @@ def _append_tail(
 def _release_page_images(pages: Sequence[PdfPageContext]) -> None:
     for page in pages:
         page.image_base64 = None
+
+
+_SECTION_TITLE_RE = re.compile(r"\\(?:sub)*section\*?\{([^{}\n]+)\}")
+
+
+class _TitleEvidenceCollector:
+    """Collect compact title clues without retaining page images."""
+
+    def __init__(self, *, filename_title: str):
+        self.filename_title = filename_title
+        self._headings: list[str] = []
+        self._page_starts: list[str] = []
+        self._latex_sections: list[str] = []
+        self._seen: set[str] = set()
+
+    def add_chunk(self, chunk: PdfDocumentChunk, latex_fragment: str) -> None:
+        for page in chunk.pages:
+            for block in page.text_blocks:
+                if block.block_type != "heading":
+                    continue
+                self._add_unique(
+                    self._headings,
+                    f"第 {page.page_number} 页 heading：{block.text}",
+                    max_items=40,
+                )
+
+            plain_text = _normalize_title_text(page.plain_text)
+            if plain_text:
+                self._add_unique(
+                    self._page_starts,
+                    f"第 {page.page_number} 页开头：{plain_text[:300]}",
+                    max_items=40,
+                )
+
+        for match in _SECTION_TITLE_RE.finditer(latex_fragment):
+            self._add_unique(
+                self._latex_sections,
+                match.group(1),
+                max_items=40,
+            )
+
+    def build(self, max_chars: int = 12000) -> str:
+        lines = [f"PDF 文件名：{self.filename_title}"]
+        if self._headings:
+            lines.extend(["", "页面 heading 线索：", *self._headings])
+        if self._latex_sections:
+            lines.extend(["", "已生成 LaTeX 章节线索：", *self._latex_sections])
+        if self._page_starts:
+            lines.extend(["", "页面开头文本线索：", *self._page_starts])
+
+        evidence = "\n".join(lines)
+        if len(evidence) <= max_chars:
+            return evidence
+        return evidence[:max_chars].rstrip() + "\n[标题线索已截断]"
+
+    def _add_unique(self, target: list[str], value: str, *, max_items: int) -> None:
+        normalized = _normalize_title_text(value)
+        if not normalized or normalized in self._seen or len(target) >= max_items:
+            return
+        self._seen.add(normalized)
+        target.append(normalized)
+
+
+def _normalize_title_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
 
 
 class _LlmWaitSpinner:

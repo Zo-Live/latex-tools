@@ -21,6 +21,18 @@ SYSTEM_PROMPT = """你是中文数学讲义的 LaTeX 整理助手。
 9. 中文标点和数学符号要尽量还原讲义语义，不要保留 OCR 的逐字断行。
 """
 
+TITLE_SYSTEM_PROMPT = """你是中文数学讲义的标题整理助手。
+
+任务：根据 PDF 文件名、页面文本线索和已生成的 LaTeX 章节线索，生成一个适合作为 LaTeX \\title 的中文标题。
+
+硬性要求：
+1. 只输出 JSON 对象，不要输出 Markdown 代码块。
+2. JSON 格式必须为 {"title": "..."}。
+3. title 要稳定、简短、具体，优先反映讲义主题。
+4. 不要包含作者、日期、学校、页码、文件扩展名或“标题：”前缀。
+5. 不要凭空补充线索中没有的信息；无法判断时使用文件名中的主题。
+"""
+
 
 def build_chunk_messages(
     *,
@@ -72,6 +84,32 @@ def build_chunk_messages(
     return [
         {"role": "system", "content": system_content},
         {"role": "user", "content": user_content},
+    ]
+
+
+def build_title_messages(
+    *,
+    fallback_title: str,
+    title_evidence: str,
+    extra_prompt: str = "",
+) -> List[Dict[str, Any]]:
+    """Build OpenAI-compatible chat messages for document title generation."""
+    system_content = TITLE_SYSTEM_PROMPT
+    if extra_prompt:
+        system_content += f"\n\n额外要求：{extra_prompt}"
+
+    user_text = "\n".join(
+        [
+            f"默认文件名标题：{fallback_title}",
+            "",
+            "可用标题线索：",
+            title_evidence.strip() or "[无额外线索]",
+        ]
+    )
+
+    return [
+        {"role": "system", "content": system_content},
+        {"role": "user", "content": user_text},
     ]
 
 

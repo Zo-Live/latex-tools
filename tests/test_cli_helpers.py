@@ -3,7 +3,7 @@
 import pytest
 import typer
 
-from latex_tools.cli import _build_converter, _parse_pages
+from latex_tools.cli import TitleSource, _build_converter, _parse_pages
 
 
 class DummyClient:
@@ -54,6 +54,80 @@ def test_build_converter_normalizes_image_options(tmp_path):
     assert converter.cache_options.cache_dir == tmp_path / "cache"
     assert converter.cache_options.llm_model == "test-model"
     assert converter.cache_options.clear is False
+    assert converter.title_source == "filename"
+    assert converter.manual_title is None
+    assert converter.show_date is False
+
+
+def test_build_converter_passes_title_and_date_options(tmp_path):
+    converter = _build_converter(
+        model="test-model",
+        api_key="test-key",
+        base_url=None,
+        temperature=1.0,
+        timeout=10.0,
+        max_tokens=128,
+        chunk_pages=2,
+        image_dpi=144,
+        cache_dir=tmp_path / "cache",
+        title_source=TitleSource.filename,
+        manual_title=" 手动标题 ",
+        show_date=True,
+        client=DummyClient(),
+    )
+
+    assert converter.title_source == "filename"
+    assert converter.manual_title == "手动标题"
+    assert converter.show_date is True
+
+    llm_converter = _build_converter(
+        model="test-model",
+        api_key="test-key",
+        base_url=None,
+        temperature=1.0,
+        timeout=10.0,
+        max_tokens=128,
+        chunk_pages=2,
+        image_dpi=144,
+        cache_dir=tmp_path / "cache",
+        title_source=TitleSource.llm,
+        client=DummyClient(),
+    )
+
+    assert llm_converter.title_source == "llm"
+
+
+def test_build_converter_rejects_invalid_title_options(tmp_path):
+    with pytest.raises(typer.BadParameter, match="title"):
+        _build_converter(
+            model="test-model",
+            api_key="test-key",
+            base_url=None,
+            temperature=1.0,
+            timeout=10.0,
+            max_tokens=128,
+            chunk_pages=2,
+            image_dpi=144,
+            cache_dir=tmp_path / "cache",
+            manual_title=" ",
+            client=DummyClient(),
+        )
+
+    with pytest.raises(typer.BadParameter, match="title-source"):
+        _build_converter(
+            model="test-model",
+            api_key="test-key",
+            base_url=None,
+            temperature=1.0,
+            timeout=10.0,
+            max_tokens=128,
+            chunk_pages=2,
+            image_dpi=144,
+            cache_dir=tmp_path / "cache",
+            title_source=TitleSource.llm,
+            manual_title="手动标题",
+            client=DummyClient(),
+        )
 
 
 def test_build_converter_accepts_unlimited_timeout(tmp_path):

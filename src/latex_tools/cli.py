@@ -1,5 +1,6 @@
 """CLI entry point for latex-tools."""
 
+from enum import Enum
 from pathlib import Path
 from typing import Optional
 
@@ -10,6 +11,13 @@ from .llm.cache import ChunkCacheOptions
 from .llm.client import OpenAICompatibleClient
 from .llm.config import LLMConfig, LLMConfigError
 from .llm.pipeline import LLMPdfConverter
+
+
+class TitleSource(str, Enum):
+    """Document title source strategy."""
+
+    filename = "filename"
+    llm = "llm"
 
 
 def _repo_root() -> Path:
@@ -108,9 +116,25 @@ def _build_converter(
     no_cache: bool = False,
     clear_cache: bool = False,
     extra_prompt: Optional[str] = None,
+    title_source: TitleSource | str = TitleSource.filename,
+    manual_title: Optional[str] = None,
+    show_date: bool = False,
     client: Optional[OpenAICompatibleClient] = None,
 ) -> LLMPdfConverter:
     try:
+        resolved_title_source = (
+            title_source.value if isinstance(title_source, TitleSource) else str(title_source)
+        )
+        if resolved_title_source not in {TitleSource.filename.value, TitleSource.llm.value}:
+            raise ValueError("--title-source must be filename or llm.")
+        resolved_manual_title = None
+        if manual_title is not None:
+            resolved_manual_title = manual_title.strip()
+            if not resolved_manual_title:
+                raise ValueError("--title cannot be empty.")
+        if resolved_manual_title is not None and resolved_title_source == TitleSource.llm.value:
+            raise ValueError("--title cannot be used with --title-source llm.")
+
         config = LLMConfig.from_values(
             model=model,
             api_key=api_key,
@@ -152,6 +176,9 @@ def _build_converter(
         prefetch_chunks=prefetch_chunks,
         cache_options=cache_options,
         extra_prompt=extra_prompt or "",
+        title_source=resolved_title_source,
+        manual_title=resolved_manual_title,
+        show_date=show_date,
     )
 
 
@@ -169,6 +196,22 @@ def extract(
     ),
     pages: Optional[str] = typer.Option(
         None, "--pages", help="Page selection such as 1,3-5 (1-based)"
+    ),
+    title: Optional[str] = typer.Option(
+        None,
+        "--title",
+        help="Manual LaTeX document title for this single PDF",
+    ),
+    title_source: TitleSource = typer.Option(
+        TitleSource.filename,
+        "--title-source",
+        case_sensitive=False,
+        help="Title source: filename or llm",
+    ),
+    show_date: bool = typer.Option(
+        False,
+        "--show-date/--hide-date",
+        help="Show \\today in the generated LaTeX title block",
     ),
     model: Optional[str] = typer.Option(
         None,
@@ -265,6 +308,9 @@ def extract(
         no_cache=no_cache,
         clear_cache=clear_cache,
         extra_prompt=extra_prompt,
+        title_source=title_source,
+        manual_title=title,
+        show_date=show_date,
     )
     result = converter.convert(pdf_path, pages=_parse_pages(pages))
     latex = result.latex
@@ -296,6 +342,17 @@ def batch(
     ),
     pages: Optional[str] = typer.Option(
         None, "--pages", help="Page selection such as 1,3-5 (1-based)"
+    ),
+    title_source: TitleSource = typer.Option(
+        TitleSource.filename,
+        "--title-source",
+        case_sensitive=False,
+        help="Title source: filename or llm",
+    ),
+    show_date: bool = typer.Option(
+        False,
+        "--show-date/--hide-date",
+        help="Show \\today in the generated LaTeX title block",
     ),
     model: Optional[str] = typer.Option(
         None,
@@ -392,6 +449,8 @@ def batch(
         no_cache=no_cache,
         clear_cache=clear_cache,
         extra_prompt=extra_prompt,
+        title_source=title_source,
+        show_date=show_date,
     )
     output_dir = _resolve_output_dir(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)

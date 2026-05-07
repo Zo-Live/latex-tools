@@ -9,7 +9,7 @@ import httpx
 
 from ..extract.base import PdfPageContext
 from .config import LLMConfig
-from .prompts import build_chunk_messages
+from .prompts import build_chunk_messages, build_title_messages
 
 
 class LLMResponseError(RuntimeError):
@@ -94,6 +94,45 @@ class OpenAICompatibleClient:
             raise LLMResponseError("LLM response content is empty or not text.")
         return parse_chunk_response(content)
 
+    def generate_document_title(
+        self,
+        *,
+        fallback_title: str,
+        title_evidence: str,
+        extra_prompt: str = "",
+    ) -> str:
+        messages = build_title_messages(
+            fallback_title=fallback_title,
+            title_evidence=title_evidence,
+            extra_prompt=extra_prompt,
+        )
+        request_kwargs = {
+            "model": self.config.model,
+            "messages": messages,
+            "temperature": self.config.temperature,
+            "max_tokens": min(self.config.max_tokens, 512),
+        }
+        try:
+            response = self._create_completion(request_kwargs, response_format=True)
+        except Exception as exc:  # pragma: no cover - backend specific fallback
+            if _is_temperature_one_error(exc):
+                request_kwargs["temperature"] = 1.0
+                response = self._create_completion(
+                    request_kwargs,
+                    response_format=True,
+                )
+            elif "response_format" not in str(exc):
+                raise
+            else:
+                response = self._create_completion(
+                    request_kwargs,
+                    response_format=False,
+                )
+        content = response.choices[0].message.content
+        if not isinstance(content, str):
+            raise LLMResponseError("LLM title response content is empty or not text.")
+        return parse_title_response(content)
+
     def _create_completion(self, request_kwargs: dict[str, Any], *, response_format: bool):
         if response_format:
             return self._client.chat.completions.create(
@@ -119,6 +158,19 @@ def parse_chunk_response(raw_content: str) -> LLMChunkResult:
         notes = [str(notes_value)]
 
     return LLMChunkResult(latex=latex.strip(), notes=notes)
+
+
+def parse_title_response(raw_content: str) -> str:
+    """Parse the expected JSON object from an LLM title response."""
+    data = _load_json_object(_strip_code_fence(raw_content))
+    title = data.get("title")
+    if not isinstance(title, str) or not title.strip():
+        raise LLMResponseError("LLM response JSON must contain a non-empty title field.")
+
+    normalized = _normalize_response_title(title)
+    if not normalized:
+        raise LLMResponseError("LLM response JSON must contain a non-empty title field.")
+    return normalized
 
 
 def _strip_code_fence(text: str) -> str:
@@ -156,6 +208,10 @@ def _load_json_object(text: str) -> Mapping[str, Any]:
         if loose_data is not None:
             return loose_data
     return data
+
+
+def _normalize_response_title(title: str) -> str:
+    return re.sub(r"\s+", " ", title).strip()
 
 
 def _load_loose_json_object(text: str) -> Mapping[str, Any] | None:

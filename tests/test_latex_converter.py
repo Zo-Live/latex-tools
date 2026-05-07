@@ -18,6 +18,28 @@ def test_convert_fragments_strips_document_wrappers():
     assert r"\section{集合}" in latex
     assert r"\begin{definition}定义内容\end{definition}" in latex
     assert "% LLM note: removed header/footer" in latex
+    assert r"\date{}" in latex
+
+
+def test_convert_fragments_hides_date_by_default():
+    converter = LatexConverter()
+
+    latex = converter.convert_fragments(title="讲义", fragments=[])
+
+    assert r"\date{}" in latex
+    assert r"\date{\today}" not in latex
+
+
+def test_convert_fragments_can_show_today_date():
+    converter = LatexConverter()
+
+    latex = converter.convert_fragments(
+        title="讲义",
+        fragments=[],
+        show_date=True,
+    )
+
+    assert r"\date{\today}" in latex
 
 
 def test_escape_latex_escapes_special_characters_once():

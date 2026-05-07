@@ -73,9 +73,18 @@ class FakeExtractor:
 
 
 class FakeClient:
-    def __init__(self, latex_fragments=None):
+    def __init__(
+        self,
+        latex_fragments=None,
+        *,
+        title_response="LLM 生成标题",
+        title_exception=None,
+    ):
         self.calls = []
+        self.title_calls = []
         self.latex_fragments = latex_fragments
+        self.title_response = title_response
+        self.title_exception = title_exception
 
     def generate_latex_chunk(
         self,
@@ -110,6 +119,24 @@ class FakeClient:
                 "notes": [f"chunk-{chunk_index}"],
             },
         )()
+
+    def generate_document_title(
+        self,
+        *,
+        fallback_title,
+        title_evidence,
+        extra_prompt="",
+    ):
+        self.title_calls.append(
+            {
+                "fallback_title": fallback_title,
+                "title_evidence": title_evidence,
+                "extra_prompt": extra_prompt,
+            }
+        )
+        if self.title_exception is not None:
+            raise self.title_exception
+        return self.title_response
 
 
 class RaisingClient:
@@ -173,6 +200,7 @@ def _build_cache_run(
     tmp_path,
     *,
     pages=None,
+    document_title="sample",
     chunk_pages=1,
     image_dpi=160,
     image_options=None,
@@ -194,7 +222,7 @@ def _build_cache_run(
         ),
         pdf_path=pdf_path,
         pages=pages,
-        document_title="sample",
+        document_title=document_title,
         chunk_pages=chunk_pages,
         image_dpi=image_dpi,
         image_options=image_options
@@ -270,6 +298,105 @@ def test_pipeline_chunks_pages_and_builds_document():
     assert client.calls[1]["pages"] == [3]
     assert client.calls[1]["previous_latex_tail"]
     assert all(page.image_base64 is None for chunk in extractor.chunks for page in chunk.pages)
+
+
+def test_pipeline_uses_manual_title_for_prompt_and_document():
+    pages = [PdfPageContext(page_number=1, width=1, height=1)]
+    extractor = FakeExtractor(pages)
+    client = FakeClient()
+    converter = LLMPdfConverter(
+        client,
+        extractor=extractor,
+        chunk_pages=1,
+        manual_title=" 手动标题 ",
+    )
+
+    result = converter.convert(Path("docs/sample.pdf"))
+
+    assert r"\title{手动标题}" in result.latex
+    assert client.calls[0]["document_title"] == "手动标题"
+    assert client.title_calls == []
+
+
+def test_pipeline_generates_title_after_all_chunks():
+    pages = [
+        PdfPageContext(
+            page_number=1,
+            width=1,
+            height=1,
+            text_blocks=[
+                PageTextBlock(
+                    text="集合的基本概念",
+                    bbox=(0, 0, 1, 1),
+                    font_size=18,
+                    block_type="heading",
+                )
+            ],
+        ),
+        PdfPageContext(page_number=2, width=1, height=1),
+    ]
+    extractor = FakeExtractor(pages)
+    client = FakeClient(
+        latex_fragments=[
+            r"\section{集合}",
+            r"\section{映射}",
+        ],
+        title_response="集合与映射",
+    )
+    converter = LLMPdfConverter(
+        client,
+        extractor=extractor,
+        chunk_pages=1,
+        title_source="llm",
+        extra_prompt="保持章节编号",
+    )
+
+    result = converter.convert(Path("docs/sample.pdf"))
+
+    assert r"\title{集合与映射}" in result.latex
+    assert [call["document_title"] for call in client.calls] == ["sample", "sample"]
+    assert len(client.title_calls) == 1
+    assert client.title_calls[0]["fallback_title"] == "sample"
+    assert "集合的基本概念" in client.title_calls[0]["title_evidence"]
+    assert "集合" in client.title_calls[0]["title_evidence"]
+    assert client.title_calls[0]["extra_prompt"] == "保持章节编号"
+
+
+def test_pipeline_falls_back_to_filename_when_llm_title_fails():
+    pages = [PdfPageContext(page_number=1, width=1, height=1)]
+    extractor = FakeExtractor(pages)
+    client = FakeClient(
+        latex_fragments=[r"\section{集合}"],
+        title_exception=RuntimeError("title failed"),
+    )
+    converter = LLMPdfConverter(
+        client,
+        extractor=extractor,
+        chunk_pages=1,
+        title_source="llm",
+    )
+
+    result = converter.convert(Path("docs/sample.pdf"))
+
+    assert r"\title{sample}" in result.latex
+    assert len(client.title_calls) == 1
+    assert result.notes == ["chunk-1"]
+
+
+def test_pipeline_can_show_today_date():
+    pages = [PdfPageContext(page_number=1, width=1, height=1)]
+    extractor = FakeExtractor(pages)
+    client = FakeClient()
+    converter = LLMPdfConverter(
+        client,
+        extractor=extractor,
+        chunk_pages=1,
+        show_date=True,
+    )
+
+    result = converter.convert(Path("docs/sample.pdf"))
+
+    assert r"\date{\today}" in result.latex
 
 
 def test_pipeline_shows_spinner_for_uncached_llm_chunk():
@@ -363,6 +490,46 @@ def test_pipeline_reuses_chunk_cache_after_successful_run(tmp_path):
     assert "second-cached" in second_result.latex
     assert second_extractor.calls[0]["chunk_size"] == 1
     assert all(page.image_base64 is None for chunk in second_extractor.chunks for page in chunk.pages)
+
+
+def test_pipeline_reuses_chunk_cache_when_llm_title_falls_back(tmp_path):
+    pdf_path = tmp_path / "sample.pdf"
+    pdf_path.write_bytes(b"sample-pdf-bytes")
+    cache_options = ChunkCacheOptions(
+        cache_dir=tmp_path / "cache",
+        llm_model="test-model",
+    )
+    first_client = FakeClient(
+        latex_fragments=["cached-body"],
+        title_exception=RuntimeError("title failed"),
+    )
+    first_converter = LLMPdfConverter(
+        first_client,
+        extractor=FakeExtractor([_page(1, image_base64="page-1")]),
+        chunk_pages=1,
+        cache_options=cache_options,
+        title_source="llm",
+    )
+
+    first_result = first_converter.convert(pdf_path)
+
+    assert "cached-body" in first_result.latex
+    assert r"\title{sample}" in first_result.latex
+    assert len(first_client.calls) == 1
+    assert len(first_client.title_calls) == 1
+
+    second_converter = LLMPdfConverter(
+        RaisingClient(),
+        extractor=FakeExtractor([_page(1, image_base64="page-1")]),
+        chunk_pages=1,
+        cache_options=cache_options,
+        title_source="llm",
+    )
+
+    second_result = second_converter.convert(pdf_path)
+
+    assert "cached-body" in second_result.latex
+    assert r"\title{sample}" in second_result.latex
 
 
 def test_pipeline_reuses_completed_cache_after_later_chunk_failure(tmp_path):
@@ -712,6 +879,10 @@ def test_chunk_cache_run_key_changes_with_inputs(tmp_path):
         pages=[1, 2],
     ).run_key
     assert base.run_key != _build_cache_run(tmp_path, pages=[2]).run_key
+    assert base.run_key != _build_cache_run(
+        tmp_path,
+        document_title="手动标题",
+    ).run_key
     assert base.run_key != _build_cache_run(tmp_path, chunk_pages=2).run_key
     assert base.run_key != _build_cache_run(tmp_path, extra_prompt="额外要求").run_key
     assert base.run_key != _build_cache_run(

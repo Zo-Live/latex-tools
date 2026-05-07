@@ -8,9 +8,10 @@ from latex_tools.llm.client import (
     LLMResponseError,
     OpenAICompatibleClient,
     parse_chunk_response,
+    parse_title_response,
 )
 from latex_tools.llm.config import LLMConfig
-from latex_tools.llm.prompts import build_chunk_messages
+from latex_tools.llm.prompts import build_chunk_messages, build_title_messages
 
 
 def test_parse_chunk_response_accepts_fenced_json():
@@ -29,6 +30,21 @@ def test_parse_chunk_response_rejects_missing_latex():
         parse_chunk_response('{"notes": []}')
     except LLMResponseError as exc:
         assert "latex" in str(exc)
+    else:
+        raise AssertionError("Expected LLMResponseError")
+
+
+def test_parse_title_response_normalizes_title():
+    title = parse_title_response('{"title": "  6.1\\n集合与映射  "}')
+
+    assert title == "6.1 集合与映射"
+
+
+def test_parse_title_response_rejects_missing_title():
+    try:
+        parse_title_response('{"latex": "\\\\section{集合}"}')
+    except LLMResponseError as exc:
+        assert "title" in str(exc)
     else:
         raise AssertionError("Expected LLMResponseError")
 
@@ -102,3 +118,17 @@ def test_build_chunk_messages_contains_page_text_and_image():
     assert any(item["type"] == "text" and "第六章" in item["text"] for item in content)
     assert any(item["type"] == "text" and "PAGE 2" in item["text"] for item in content)
     assert any(item["type"] == "image_url" for item in content)
+
+
+def test_build_title_messages_contains_fallback_and_evidence():
+    messages = build_title_messages(
+        fallback_title="6.1 集合与映射",
+        title_evidence="\\section{集合}",
+        extra_prompt="保持章节编号",
+    )
+
+    assert messages[0]["role"] == "system"
+    assert "保持章节编号" in messages[0]["content"]
+    assert messages[1]["role"] == "user"
+    assert "6.1 集合与映射" in messages[1]["content"]
+    assert "\\section{集合}" in messages[1]["content"]
